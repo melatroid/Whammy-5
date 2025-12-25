@@ -6,7 +6,7 @@ import time
 # -----------------------------
 # PINS
 # -----------------------------
-PIN_FOOTSW = 4
+PIN_FOOTSW = 5
 PIN_LAYER_SWITCH = 14
 PIN_POT = 26
 
