@@ -28,6 +28,44 @@ except ImportError:
     DISPLAY_UI_AVAILABLE = False
     print("[WARN] display_ui.py not found -> UI helper disabled")
 
+# =========================================================
+# HARDWARE SELF-TEST STATUS (WITH REPORT)
+# =========================================================
+
+HW_STATUS = {
+    "OLED":   {"ok": False, "weight": 20, "info": ""},
+    "SD":     {"ok": False, "weight": 25, "info": ""},
+    "BT":     {"ok": False, "weight": 20, "info": ""},
+    "MIDI":   {"ok": False, "weight": 20, "info": ""},
+    "INPUTS": {"ok": False, "weight": 15, "info": ""},
+}
+
+def hw_score_percent():
+    return sum(v["weight"] for v in HW_STATUS.values() if v["ok"])
+
+def print_hw_report():
+    print("\n=== HARDWARE HEALTH REPORT ===")
+    for name, v in HW_STATUS.items():
+        state = "OK" if v["ok"] else "FAIL"
+        print(f"{name:<7}: {state:<4} ({v['weight']:>2}%) - {v['info']}")
+    print(f"\nTOTAL HARDWARE FUNCTIONALITY: {hw_score_percent()} / 100 %")
+    print("=== END HARDWARE REPORT ===\n")
+
+def oled_hw_report_brief():
+    """Optional: show a short summary on the OLED."""
+    if not oled:
+        return
+    ok = hw_score_percent()
+    oled.fill(0)
+    oled.text("HW REPORT", 0, 0)
+    oled.text(f"SCORE: {ok:3d}%", 0, 12)
+    oled.text(f"OLED:{'OK' if HW_STATUS['OLED']['ok'] else 'NO'}", 0, 24)
+    oled.text(f"SD  :{'OK' if HW_STATUS['SD']['ok'] else 'NO'}", 0, 34)
+    oled.text(f"BT  :{'OK' if HW_STATUS['BT']['ok'] else 'NO'}", 0, 44)
+    oled.text(f"MIDI:{'OK' if HW_STATUS['MIDI']['ok'] else 'NO'}", 0, 54)
+    oled.show()
+    time.sleep_ms(1200)
+
 # -----------------------------
 # PINS
 # -----------------------------
@@ -141,15 +179,41 @@ footsw = Pin(PIN_FOOTSW, Pin.IN, Pin.PULL_UP)
 layer_sw = Pin(PIN_LAYER_SWITCH, Pin.IN, Pin.PULL_UP)
 pot = ADC(Pin(PIN_POT))
 
+# INPUTS TEST (status)
+try:
+    _ = footsw.value()
+    _ = layer_sw.value()
+    _ = pot.read_u16()
+    HW_STATUS["INPUTS"]["ok"] = True
+    HW_STATUS["INPUTS"]["info"] = "footsw + layer + pot OK"
+except Exception as e:
+    HW_STATUS["INPUTS"]["info"] = str(e)
+
 # MIDI: TX-only (no RX)
 midi = None
 if MIDI_ENABLED:
-    midi = UART(MIDI_UART_ID, baudrate=MIDI_BAUD, tx=Pin(MIDI_TX_PIN))
+    try:
+        midi = UART(MIDI_UART_ID, baudrate=MIDI_BAUD, tx=Pin(MIDI_TX_PIN))
+        HW_STATUS["MIDI"]["ok"] = True
+        HW_STATUS["MIDI"]["info"] = f"UART{MIDI_UART_ID} TX GP{MIDI_TX_PIN} OK"
+    except Exception as e:
+        midi = None
+        HW_STATUS["MIDI"]["info"] = f"init failed: {e}"
+else:
+    HW_STATUS["MIDI"]["info"] = "disabled"
 
 # Bluetooth UART
 bt = None
 if BT_ENABLED:
-    bt = UART(BT_UART_ID, baudrate=BT_BAUD, tx=Pin(BT_TX_PIN), rx=Pin(BT_RX_PIN))
+    try:
+        bt = UART(BT_UART_ID, baudrate=BT_BAUD, tx=Pin(BT_TX_PIN), rx=Pin(BT_RX_PIN))
+        # mark as available; detailed status set in bluetooth_test()
+        HW_STATUS["BT"]["info"] = f"UART{BT_UART_ID} init OK"
+    except Exception as e:
+        bt = None
+        HW_STATUS["BT"]["info"] = f"init failed: {e}"
+else:
+    HW_STATUS["BT"]["info"] = "disabled"
 
 # -----------------------------
 # UNIFORM CONSOLE DEBUG + BT POLL
@@ -300,7 +364,7 @@ oled = None
 cfg = None
 oled_addr = OLED_ADDR_FALLBACK
 
-if OLED_ENABLED:
+if OLED_ENABLED and SSD1306_AVAILABLE and ssd1306 is not None:
     try:
         oled, cfg = ssd1306.init_oled(width=OLED_W, height=OLED_H, freq=OLED_FREQ, debug=True, strict=False)
 
@@ -308,11 +372,26 @@ if OLED_ENABLED:
             oled_addr = int(cfg.get("addr", OLED_ADDR_FALLBACK))
         else:
             oled_addr = OLED_ADDR_FALLBACK
+
+        if oled:
+            HW_STATUS["OLED"]["ok"] = True
+            HW_STATUS["OLED"]["info"] = f"I2C{OLED_I2C_ID} addr {hex(oled_addr)}"
+        else:
+            HW_STATUS["OLED"]["info"] = "not detected"
+
     except Exception as e:
         oled = None
         cfg = None
         oled_addr = OLED_ADDR_FALLBACK
+        HW_STATUS["OLED"]["info"] = str(e)
         print("OLED init failed:", e)
+else:
+    if not OLED_ENABLED:
+        HW_STATUS["OLED"]["info"] = "disabled"
+    elif not SSD1306_AVAILABLE:
+        HW_STATUS["OLED"]["info"] = "ssd1306.py missing"
+    else:
+        HW_STATUS["OLED"]["info"] = "not available"
 
 
 def oled_clear():
@@ -423,6 +502,9 @@ def bluetooth_test(duration_ms=6000):
     print("\n=== BLUETOOTH TEST (HC-06) ===")
     if not (BT_ENABLED and bt is not None):
         print("Bluetooth not enabled/available.")
+        HW_STATUS["BT"]["ok"] = False
+        if "disabled" not in HW_STATUS["BT"]["info"]:
+            HW_STATUS["BT"]["info"] = "not available"
         return
 
     bt_rx_buf = b""
@@ -433,12 +515,19 @@ def bluetooth_test(duration_ms=6000):
     if oled:
         oled_show_preset("BT TEST", "send/read", 0, 0, state="ON")
 
+    # Mark as OK if UART exists and TX works; RX is a bonus
+    HW_STATUS["BT"]["ok"] = True
+    HW_STATUS["BT"]["info"] = f"UART{BT_UART_ID} init OK"
+
     try:
         bt.write(b"HC-06 TEST: hello from RP2040!\r\n")
         print("BT: sent test line. Pair phone/PC and open serial terminal.")
         print("BT: send something back during the next seconds...")
+        HW_STATUS["BT"]["info"] = "TX OK (waiting RX)"
     except Exception as e:
         print("BT write failed:", e)
+        HW_STATUS["BT"]["ok"] = False
+        HW_STATUS["BT"]["info"] = f"write failed: {e}"
 
     t0 = time.ticks_ms()
     while time.ticks_diff(time.ticks_ms(), t0) < duration_ms:
@@ -448,15 +537,18 @@ def bluetooth_test(duration_ms=6000):
             bt_last_bytes = b""
         time.sleep_ms(20)
 
-    if bt_rx_count > 0:
-        print("BT received bytes:", bt_rx_count)
-        print("BT last line:", bt_last_line if bt_last_line else "-")
-        if oled:
-            oled_show_preset("BT TEST", "RX OK", 0, 0, state="ON")
-    else:
-        print("BT: no data received. Send something from phone/PC while test runs.\n")
-        if oled:
-            oled_show_preset("BT TEST", "no RX", 0, 0, state="ON")
+    if HW_STATUS["BT"]["ok"]:
+        if bt_rx_count > 0:
+            print("BT received bytes:", bt_rx_count)
+            print("BT last line:", bt_last_line if bt_last_line else "-")
+            HW_STATUS["BT"]["info"] = f"TX OK, {bt_rx_count} bytes RX"
+            if oled:
+                oled_show_preset("BT TEST", "RX OK", 0, 0, state="ON")
+        else:
+            print("BT: no data received. Send something from phone/PC while test runs.\n")
+            HW_STATUS["BT"]["info"] = "TX OK, no RX data"
+            if oled:
+                oled_show_preset("BT TEST", "no RX", 0, 0, state="ON")
 
     time.sleep_ms(800)
     if oled:
@@ -468,10 +560,14 @@ def sdcard_test():
 
     if not SD_ENABLED:
         print("SD disabled.")
+        HW_STATUS["SD"]["ok"] = False
+        HW_STATUS["SD"]["info"] = "disabled"
         return
 
     if sdcard is None:
         print("sdcard.py not found -> copy sdcard.py into your project.")
+        HW_STATUS["SD"]["ok"] = False
+        HW_STATUS["SD"]["info"] = "sdcard.py missing"
         return
 
     if oled:
@@ -513,11 +609,16 @@ def sdcard_test():
         os.umount(SD_MOUNT_PT)
         print("Unmounted SD.")
 
+        HW_STATUS["SD"]["ok"] = True
+        HW_STATUS["SD"]["info"] = "mount + rw OK"
+
         if oled:
             oled_show_preset("SD TEST", "OK", 0, 0, state="ON")
 
     except Exception as e:
         print("SD TEST FAILED:", e)
+        HW_STATUS["SD"]["ok"] = False
+        HW_STATUS["SD"]["info"] = str(e)
         if oled:
             oled_show_preset("SD TEST", "FAILED", 0, 0, state="ON")
 
@@ -653,7 +754,7 @@ def test_mode(mode_name, active_list, bypass_list, ch0):
         time.sleep_ms(PC_STEP_DELAY_MS)
 
         bt_poll()
-        print(fmt_dbg(mode_name[:DBG_COL_MODE], "ON_END", pc_on, ch0 + 1, name[:DBG_COL_NAME], bt_status_str()))
+        #print(fmt_dbg(mode_name[:DBG_COL_MODE], "ON_END", pc_on, ch0 + 1, name[:DBG_COL_NAME], bt_status_str()))
 
         if SEND_EFFECT_OFF_AFTER_ACTIVE:
             pc_off = bypass_lookup.get(name, None)
@@ -665,7 +766,7 @@ def test_mode(mode_name, active_list, bypass_list, ch0):
                 time.sleep_ms(EFFECT_OFF_DELAY_MS)
 
                 bt_poll()
-                print(fmt_dbg(mode_name[:DBG_COL_MODE], "OFF_END", pc_off, ch0 + 1, name[:DBG_COL_NAME], bt_status_str()))
+                #print(fmt_dbg(mode_name[:DBG_COL_MODE], "OFF_END", pc_off, ch0 + 1, name[:DBG_COL_NAME], bt_status_str()))
 
 
 def run_all_tests(ch0):
@@ -737,7 +838,7 @@ def live_monitor():
     idx = {"CLASSIC": 0, "CHORDS": 0}
     effect_on = {"CLASSIC": False, "CHORDS": False}
 
-    # NEW: keep consistent display state per mode (last sent PC + state text)
+    # keep consistent display state per mode (last sent PC + state text)
     last_pc_sent = {"CLASSIC": 0, "CHORDS": 0}
     last_state_txt = {"CLASSIC": "OFF", "CHORDS": "OFF"}
 
@@ -806,7 +907,7 @@ def live_monitor():
             if LIVE_SEND_CC11 and MIDI_ENABLED and midi is not None:
                 midi_cc(11, cc11_val, LIVE_CC11_CHANNEL)
 
-            # NEW: update OLED immediately on pot movement (smooth UX)
+            # update OLED immediately on pot movement
             if cur_mode == "CLASSIC":
                 name, sel_pc = classic_active[idx["CLASSIC"]]
             else:
@@ -907,6 +1008,12 @@ try:
     sdcard_test()
     bluetooth_test()
 
+    # NEW: unified testergebnis / report
+    print_hw_report()
+    oled_hw_report_brief()
+    if oled:
+        oled_clear()
+
     run_all_tests(TEST_CHANNEL)
     live_monitor()
 
@@ -914,3 +1021,4 @@ except KeyboardInterrupt:
     if oled:
         oled_show_preset("Stopped", "by user", 0, TEST_CHANNEL + 1, state="ON")
     print("\nStopped by user (Ctrl+C).")
+
