@@ -5,9 +5,8 @@ Im Working on nice Software for Whammy, that you can easly update. <br>
 You need all modifications to use the featueres. Good Luck <br>
 # Basic Version for Free
 # Pro Version
-<br><br>
 <div align="left">
-  <a href="https://www.nexosoft-engineering.de/neo/index.html">NEO Pro</a>
+  <a href="https://www.nexosoft-engineering.de/neo/index.html">For Pro Version click here...</a>
 </div>
 
 <h1>
