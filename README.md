@@ -10,3 +10,9 @@ You need all modifications to use the featueres. Good Luck <br>
 This Modification could brick your Device!
 You lose your manufacturer's warranty.
 <h1>
+
+# Momantary       - In process
+# Holding (time)  - In process
+# Auto Divebomb (time) - In process
+# Shutter (time) - In process
+# Step Sequenzer - In process
