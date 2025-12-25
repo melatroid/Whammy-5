@@ -1,8 +1,44 @@
-# Melatroid - Whammy 5 MIDI/BLUETOOTH/SDCARD TEST SUITE - 1.02
+# Melatroid - Whammy 5 MIDI/BLUETOOTH/SDCARD TEST SUITE - 1.02 
 
 from machine import Pin, ADC, UART, I2C, SPI
 import time
 import os
+
+# SET HERE False to True
+OLED_ENABLED = False
+BT_ENABLED = False
+SD_ENABLED = True
+
+# =========================================================
+# FAIL-SAFE / TIMEOUT HELPERS
+# =========================================================
+
+class TimeoutError(Exception):
+    pass
+
+def run_with_timeout(fn, timeout_ms, name="task", *args, **kwargs):
+    """
+    Runs fn(*args, **kwargs) with a soft timeout.
+    IMPORTANT: If a driver blocks inside native code forever, MicroPython can't kill it.
+               But for our own loops and common drivers, this prevents long blocking.
+    """
+    t0 = time.ticks_ms()
+
+    def timeout_cb():
+        return time.ticks_diff(time.ticks_ms(), t0) >= timeout_ms
+
+    try:
+        # If the function accepts a timeout callback (recommended), pass it:
+        return fn(timeout_cb, *args, **kwargs)
+    except TypeError:
+        # Function doesn't accept timeout_cb; run it, but at least detect "already timed out"
+        if timeout_cb():
+            raise TimeoutError(f"{name} timeout before start")
+        return fn(*args, **kwargs)
+
+# =========================================================
+# OPTIONAL MODULES
+# =========================================================
 
 try:
     import ssd1306
@@ -73,19 +109,19 @@ PIN_FOOTSW = 5
 PIN_LAYER_SWITCH = 14
 PIN_POT = 26
 
-OLED_ENABLED = True
+
 OLED_I2C_ID = 1
 OLED_SDA_PIN = 6
 OLED_SCL_PIN = 7
 OLED_W = 128
 OLED_H = 64
 OLED_FREQ = 400000
-OLED_ADDR_FALLBACK = 0x3C  # typical: 0x3C or 0x3D
+OLED_ADDR_FALLBACK = 0x3C 
 
 # -----------------------------
 # BLUETOOTH (HC-06) TEST CONFIG
 # -----------------------------
-BT_ENABLED = True
+
 BT_UART_ID = 1
 BT_BAUD = 9600
 
@@ -96,7 +132,6 @@ BT_RX_PIN = 9   # RP2040 RX <- HC-06 TXD
 # -----------------------------
 # SD CARD (SPI) TEST CONFIG
 # -----------------------------
-SD_ENABLED = True
 SD_SPI_ID = 0
 
 # According to your breakout image (1528-4682-ND):
@@ -112,7 +147,7 @@ SD_MOUNT_PT = "/sd"
 MIDI_ENABLED = True
 MIDI_UART_ID = 0
 MIDI_BAUD = 31250
-MIDI_TX_PIN = 0  # TX only (no RX)
+MIDI_TX_PIN = 0
 
 TEST_CHANNEL = 0
 PC_MINUS_ONE = False
@@ -189,7 +224,10 @@ try:
 except Exception as e:
     HW_STATUS["INPUTS"]["info"] = str(e)
 
-# MIDI: TX-only (no RX)
+# =========================================================
+# MIDI (MUST START ASAP)
+# =========================================================
+
 midi = None
 if MIDI_ENABLED:
     try:
@@ -201,6 +239,35 @@ if MIDI_ENABLED:
         HW_STATUS["MIDI"]["info"] = f"init failed: {e}"
 else:
     HW_STATUS["MIDI"]["info"] = "disabled"
+
+def midi_write(data: bytes):
+    if MIDI_ENABLED and midi is not None:
+        midi.write(data)
+
+def midi_cc(cc, val, ch0):
+    midi_write(bytes([0xB0 | (ch0 & 0x0F), cc & 0x7F, val & 0x7F]))
+
+def midi_pc(pc, ch0):
+    send_pc = (pc - 1) if PC_MINUS_ONE else pc
+    if send_pc < 0:
+        send_pc = 0
+    midi_write(bytes([0xC0 | (ch0 & 0x0F), send_pc & 0x7F]))
+
+def midi_heartbeat():
+    """
+    Sends a short recognizable burst right after boot,
+    so you can verify that MIDI TX is alive even if other tests fail.
+    """
+    if not (MIDI_ENABLED and midi is not None):
+        print("[MIDI] Heartbeat skipped (MIDI not available).")
+        return
+    try:
+        midi_pc(0, TEST_CHANNEL)
+        time.sleep_ms(20)
+        midi_cc(11, 64, TEST_CHANNEL)
+        print("[MIDI] Heartbeat sent (PC0 + CC11=64).")
+    except Exception as e:
+        print("[MIDI] Heartbeat failed:", e)
 
 # Bluetooth UART
 bt = None
@@ -229,7 +296,6 @@ bt_rx_buf = b""
 bt_last_line = ""
 bt_last_bytes = b""
 bt_rx_count = 0
-
 
 def bt_poll(max_bytes=64):
     """
@@ -268,7 +334,6 @@ def bt_poll(max_bytes=64):
 
     return True
 
-
 def bt_status_str():
     """
     Short status string for debug column.
@@ -281,7 +346,6 @@ def bt_status_str():
         return f"{bt_rx_count}B"
     return "-"
 
-
 def fmt_dbg(mode, state, pc, ch1, name, bt_info=""):
     """
     Builds a fixed-width debug line.
@@ -293,7 +357,6 @@ def fmt_dbg(mode, state, pc, ch1, name, bt_info=""):
     name_s = f"{str(name):<{DBG_COL_NAME}}"
     bt_s = f"{str(bt_info):<{DBG_COL_BT}}"
     return f"{mode_s} {state_s} PC:{pc_s} CH:{ch_s} {name_s} | BT:{bt_s}"
-
 
 def print_dbg_header(ch1):
     print(fmt_dbg("MODE", "STATE", 0, ch1, "NAME", "LAST_RX"))
@@ -358,54 +421,64 @@ def print_pin_assignments():
     print("=== END CONFIG ===\n")
 
 # -----------------------------
-# OLED INIT + HELPERS (AUTO-DETECT + PERSIST)
+# OLED INIT + HELPERS (FAIL-SAFE INIT)
 # -----------------------------
 oled = None
 cfg = None
 oled_addr = OLED_ADDR_FALLBACK
 
-if OLED_ENABLED and SSD1306_AVAILABLE and ssd1306 is not None:
-    try:
-        oled, cfg = ssd1306.init_oled(width=OLED_W, height=OLED_H, freq=OLED_FREQ, debug=True, strict=False)
+def _oled_init(timeout_cb=None):
+    global oled, cfg, oled_addr
 
-        if cfg:
-            oled_addr = int(cfg.get("addr", OLED_ADDR_FALLBACK))
-        else:
-            oled_addr = OLED_ADDR_FALLBACK
+    if not (OLED_ENABLED and SSD1306_AVAILABLE and ssd1306 is not None):
+        return
 
+    if timeout_cb and timeout_cb():
+        raise TimeoutError("OLED init timeout before start")
+
+    oled, cfg = ssd1306.init_oled(width=OLED_W, height=OLED_H, freq=OLED_FREQ, debug=True, strict=False)
+
+    if cfg:
+        oled_addr = int(cfg.get("addr", OLED_ADDR_FALLBACK))
+    else:
+        oled_addr = OLED_ADDR_FALLBACK
+
+try:
+    if OLED_ENABLED and SSD1306_AVAILABLE and ssd1306 is not None:
+        print("[OLED] init (fail-safe)...")
+        # Soft timeout: if init blocks forever in the driver, MP can't kill it,
+        # but in normal cases this prevents long delays.
+        run_with_timeout(_oled_init, 1200, "OLED init")
         if oled:
             HW_STATUS["OLED"]["ok"] = True
             HW_STATUS["OLED"]["info"] = f"I2C{OLED_I2C_ID} addr {hex(oled_addr)}"
         else:
             HW_STATUS["OLED"]["info"] = "not detected"
-
-    except Exception as e:
-        oled = None
-        cfg = None
-        oled_addr = OLED_ADDR_FALLBACK
-        HW_STATUS["OLED"]["info"] = str(e)
-        print("OLED init failed:", e)
-else:
-    if not OLED_ENABLED:
-        HW_STATUS["OLED"]["info"] = "disabled"
-    elif not SSD1306_AVAILABLE:
-        HW_STATUS["OLED"]["info"] = "ssd1306.py missing"
     else:
-        HW_STATUS["OLED"]["info"] = "not available"
-
+        if not OLED_ENABLED:
+            HW_STATUS["OLED"]["info"] = "disabled"
+        elif not SSD1306_AVAILABLE:
+            HW_STATUS["OLED"]["info"] = "ssd1306.py missing"
+        else:
+            HW_STATUS["OLED"]["info"] = "not available"
+except Exception as e:
+    oled = None
+    cfg = None
+    oled_addr = OLED_ADDR_FALLBACK
+    HW_STATUS["OLED"]["ok"] = False
+    HW_STATUS["OLED"]["info"] = f"init failed/timeout: {e}"
+    print("[WARN] OLED init skipped:", e)
 
 def oled_clear():
     if oled:
         oled.fill(0)
         oled.show()
 
-
 def _chunk_16(s: str):
     s = str(s)
     if not s:
         return [""]
     return [s[i:i+16] for i in range(0, len(s), 16)]
-
 
 def oled_show_preset(mode_name, preset_name, pc, ch1, state="ON"):
     """
@@ -431,7 +504,6 @@ def oled_show_preset(mode_name, preset_name, pc, ch1, state="ON"):
         oled.text(s, 0, y)
         y += 10
     oled.show()
-
 
 def oled_show_effect_live(mode_name, preset_name, pc, ch1, state, pot_8bit, cc11_val):
     """
@@ -461,11 +533,13 @@ def oled_show_effect_live(mode_name, preset_name, pc, ch1, state, pot_8bit, cc11
         y += 10
     oled.show()
 
-
-def oled_test_screen():
+def oled_test_screen(timeout_cb=None):
     if not oled:
         print("OLED not available -> skip test screen")
         return
+
+    if timeout_cb and timeout_cb():
+        raise TimeoutError("OLED test timeout before start")
 
     oled.fill(0)
     oled.text("SSD1306 TEST", 0, 0)
@@ -474,7 +548,7 @@ def oled_test_screen():
     oled.text(f"SCL GP{OLED_SCL_PIN}", 0, 36)
     oled.text("OLED is OK :)", 0, 48)
     oled.show()
-    time.sleep_ms(1200)
+    time.sleep_ms(600)
 
     oled.fill(0)
     oled.text("Progress:", 0, 0)
@@ -482,21 +556,23 @@ def oled_test_screen():
     oled.show()
 
     for w in range(0, OLED_W - 2, 6):
+        if timeout_cb and timeout_cb():
+            raise TimeoutError("OLED test timeout during progress")
         oled.fill_rect(1, 17, w, 10, 1)
         oled.show()
-        time.sleep_ms(30)
+        time.sleep_ms(20)
 
     oled.fill(0)
     oled.text("SSD1306 TEST", 0, 0)
     oled.text("DONE", 0, 12)
     oled.show()
-    time.sleep_ms(600)
+    time.sleep_ms(300)
     oled_clear()
 
 # -----------------------------
-# SD + BLUETOOTH TESTS
+# SD + BLUETOOTH TESTS (FAIL-SAFE)
 # -----------------------------
-def bluetooth_test(duration_ms=6000):
+def bluetooth_test(timeout_cb=None, duration_ms=6000):
     global bt_rx_buf, bt_last_line, bt_last_bytes, bt_rx_count
 
     print("\n=== BLUETOOTH TEST (HC-06) ===")
@@ -531,6 +607,8 @@ def bluetooth_test(duration_ms=6000):
 
     t0 = time.ticks_ms()
     while time.ticks_diff(time.ticks_ms(), t0) < duration_ms:
+        if timeout_cb and timeout_cb():
+            raise TimeoutError("BT test timeout")
         bt_poll()
         if bt_last_bytes:
             print("BT RX:", bt_last_bytes)
@@ -550,12 +628,11 @@ def bluetooth_test(duration_ms=6000):
             if oled:
                 oled_show_preset("BT TEST", "no RX", 0, 0, state="ON")
 
-    time.sleep_ms(800)
+    time.sleep_ms(400)
     if oled:
         oled_clear()
 
-
-def sdcard_test():
+def sdcard_test(timeout_cb=None):
     print("\n=== SD CARD TEST (SPI) ===")
 
     if not SD_ENABLED:
@@ -573,6 +650,9 @@ def sdcard_test():
     if oled:
         oled_show_preset("SD TEST", "init...", 0, 0, state="ON")
 
+    if timeout_cb and timeout_cb():
+        raise TimeoutError("SD test timeout before start")
+
     try:
         spi = SPI(
             SD_SPI_ID,
@@ -585,8 +665,14 @@ def sdcard_test():
         )
         cs = Pin(SD_CS_PIN, Pin.OUT, value=1)
 
+        if timeout_cb and timeout_cb():
+            raise TimeoutError("SD test timeout after SPI init")
+
         sd = sdcard.SDCard(spi, cs)
         vfs = os.VfsFat(sd)
+
+        if timeout_cb and timeout_cb():
+            raise TimeoutError("SD test timeout after SDCard init")
 
         try:
             os.umount(SD_MOUNT_PT)
@@ -594,12 +680,25 @@ def sdcard_test():
             pass
 
         os.mount(vfs, SD_MOUNT_PT)
+
+        if timeout_cb and timeout_cb():
+            raise TimeoutError("SD test timeout after mount")
+
         print("Mounted SD at", SD_MOUNT_PT)
-        print("Root:", os.listdir(SD_MOUNT_PT))
+
+        # Listing can be slow on some cards; keep it bounded
+        try:
+            root = os.listdir(SD_MOUNT_PT)
+            print("Root:", root)
+        except Exception as e:
+            print("[WARN] listdir failed:", e)
 
         fn = SD_MOUNT_PT + "/sd_test.txt"
         with open(fn, "w") as f:
             f.write("SD OK - hello!\n")
+
+        if timeout_cb and timeout_cb():
+            raise TimeoutError("SD test timeout after write")
 
         with open(fn, "r") as f:
             content = f.read()
@@ -616,33 +715,15 @@ def sdcard_test():
             oled_show_preset("SD TEST", "OK", 0, 0, state="ON")
 
     except Exception as e:
-        print("SD TEST FAILED:", e)
+        print("SD TEST FAILED/SKIPPED:", e)
         HW_STATUS["SD"]["ok"] = False
         HW_STATUS["SD"]["info"] = str(e)
         if oled:
             oled_show_preset("SD TEST", "FAILED", 0, 0, state="ON")
 
-    time.sleep_ms(800)
+    time.sleep_ms(300)
     if oled:
         oled_clear()
-
-# -----------------------------
-# MIDI HELPERS
-# -----------------------------
-def midi_write(data: bytes):
-    if MIDI_ENABLED and midi is not None:
-        midi.write(data)
-
-
-def midi_cc(cc, val, ch0):
-    midi_write(bytes([0xB0 | (ch0 & 0x0F), cc & 0x7F, val & 0x7F]))
-
-
-def midi_pc(pc, ch0):
-    send_pc = (pc - 1) if PC_MINUS_ONE else pc
-    if send_pc < 0:
-        send_pc = 0
-    midi_write(bytes([0xC0 | (ch0 & 0x0F), send_pc & 0x7F]))
 
 # -----------------------------
 # DEBOUNCE / ADC HELPERS
@@ -651,7 +732,6 @@ def debounce_init(pin):
     v = pin.value()
     now = time.ticks_ms()
     return {"stable": v, "last_raw": v, "last_change_ms": now}
-
 
 def debounce_update(pin, state, now_ms):
     raw = pin.value()
@@ -662,10 +742,8 @@ def debounce_update(pin, state, now_ms):
         if state["stable"] != state["last_raw"]:
             state["stable"] = state["last_raw"]
 
-
 def pressed_from_pullup(stable_raw):
     return stable_raw == 0
-
 
 def adc_to_8bit(v_u16):
     return (v_u16 * 255 + 32767) // 65535
@@ -699,7 +777,6 @@ def build_presets_classic():
 
     return active, bypass
 
-
 def build_presets_chords():
     """
     CHORDS (0-based send map = manual minus 1):
@@ -726,7 +803,6 @@ def build_presets_chords():
 
     return active, bypass
 
-
 def make_bypass_lookup(bypass_list):
     d = {}
     for name, pc in bypass_list:
@@ -741,7 +817,8 @@ def test_mode(mode_name, active_list, bypass_list, ch0):
 
     bypass_lookup = make_bypass_lookup(bypass_list)
 
-    oled_show_preset(mode_name, "READY", 0, ch0 + 1, state="ON")
+    if oled:
+        oled_show_preset(mode_name, "READY", 0, ch0 + 1, state="ON")
     time.sleep_ms(250)
 
     print_dbg_header(ch0 + 1)
@@ -750,24 +827,22 @@ def test_mode(mode_name, active_list, bypass_list, ch0):
         midi_pc(pc_on, ch0)
         bt_poll()
         print(fmt_dbg(mode_name[:DBG_COL_MODE], "ON", pc_on, ch0 + 1, name[:DBG_COL_NAME], bt_status_str()))
-        oled_show_preset(mode_name, name, pc_on, ch0 + 1, state="ON")
+        if oled:
+            oled_show_preset(mode_name, name, pc_on, ch0 + 1, state="ON")
         time.sleep_ms(PC_STEP_DELAY_MS)
 
         bt_poll()
-        #print(fmt_dbg(mode_name[:DBG_COL_MODE], "ON_END", pc_on, ch0 + 1, name[:DBG_COL_NAME], bt_status_str()))
-
         if SEND_EFFECT_OFF_AFTER_ACTIVE:
             pc_off = bypass_lookup.get(name, None)
             if pc_off is not None:
                 midi_pc(pc_off, ch0)
                 bt_poll()
                 print(fmt_dbg(mode_name[:DBG_COL_MODE], "OFF", pc_off, ch0 + 1, name[:DBG_COL_NAME], bt_status_str()))
-                oled_show_preset(mode_name, name, pc_off, ch0 + 1, state="BYPASS")
+                if oled:
+                    oled_show_preset(mode_name, name, pc_off, ch0 + 1, state="BYPASS")
                 time.sleep_ms(EFFECT_OFF_DELAY_MS)
 
                 bt_poll()
-                #print(fmt_dbg(mode_name[:DBG_COL_MODE], "OFF_END", pc_off, ch0 + 1, name[:DBG_COL_NAME], bt_status_str()))
-
 
 def run_all_tests(ch0):
     print("=== Whammy 5: FULL TEST (CLASSIC + CHORDS) ===")
@@ -807,17 +882,20 @@ def live_monitor():
       - LAYER SWITCH selects MODE:
           layer pressed (LY=1)  -> CHORDS
           layer not pressed     -> CLASSIC
-      - MOMENTARY (footswitch) action:
-          if current effect is OFF  -> advance to next preset, send ACTIVE PC (turn ON)
-          if current effect is ON   -> send BYPASS PC for same preset (turn OFF)
+
+      - MOMENTARY (footswitch):
+          ALWAYS cycles to NEXT preset and turns it ON.
+          It will BYPASS the previously active preset (in that mode) first.
+          First press in a mode activates preset 0 (no skipping).
+
       - POT controls CC11 continuously
       - OLED shows CURRENT EFFECT (mode + name + state + PC + CH + pot/cc)
       - OLED updates immediately when pot changes (not only every PRINT_EVERY_MS)
       - PC shown is consistent: shows last PC actually sent (ON or BYPASS)
     """
-    print("=== LIVE MODE: Effect Select + Pot(CC11) ===")
+    print("=== LIVE MODE: Preset Cycle + Pot(CC11) ===")
     print("LAYER_SW: CLASSIC <-> CHORDS")
-    print("MOMENTARY: if OFF -> next preset + ON | if ON -> BYPASS (OFF)")
+    print("MOMENTARY: NEXT preset (BYPASS prev -> ON next)")
     print("POT -> CC11: 0=toe up, 127=toe down")
     print("Ctrl+C to stop.\n")
 
@@ -836,7 +914,9 @@ def live_monitor():
 
     # selection state per mode
     idx = {"CLASSIC": 0, "CHORDS": 0}
-    effect_on = {"CLASSIC": False, "CHORDS": False}
+
+    # track whether a mode has already activated a preset
+    started = {"CLASSIC": False, "CHORDS": False}
 
     # keep consistent display state per mode (last sent PC + state text)
     last_pc_sent = {"CLASSIC": 0, "CHORDS": 0}
@@ -919,7 +999,7 @@ def live_monitor():
             if oled:
                 oled_show_effect_live(cur_mode, name, show_pc, LIVE_CC11_CHANNEL + 1, show_state, last_pot_8_reported, cc11_val)
 
-        # footswitch rising edge
+        # footswitch rising edge -> NEXT PRESET (bypass prev, enable next)
         if fs_pressed and not last_fs_pressed:
             if cur_mode == "CLASSIC":
                 active_list = classic_active
@@ -930,40 +1010,34 @@ def live_monitor():
                 bypass_lu = chords_bypass_lu
                 mkey = "CHORDS"
 
-            # ON -> BYPASS
-            if effect_on[mkey]:
-                name, pc_on = active_list[idx[mkey]]
-                pc_off = bypass_lu.get(name, None)
-                if pc_off is not None:
-                    midi_pc(pc_off, LIVE_CC11_CHANNEL)
-                    effect_on[mkey] = False
-
-                    last_pc_sent[mkey] = pc_off
+            # 1) if already started in this mode -> bypass previous preset first, then advance
+            if started[mkey]:
+                prev_name, prev_pc_on = active_list[idx[mkey]]
+                prev_pc_off = bypass_lu.get(prev_name, None)
+                if prev_pc_off is not None:
+                    midi_pc(prev_pc_off, LIVE_CC11_CHANNEL)
+                    time.sleep_ms(120)   # 80–200ms testen
+                    last_pc_sent[mkey] = prev_pc_off
                     last_state_txt[mkey] = "BYPASS"
-
-                    cc11_val = (last_pot_8_reported * 127 + 127) // 255
-                    if oled:
-                        oled_show_effect_live(cur_mode, name, pc_off, LIVE_CC11_CHANNEL + 1, "BYPASS", last_pot_8_reported, cc11_val)
-
-                    print(f"[LIVE] {cur_mode} BYPASS  PC {pc_off:02d}  {name}")
                 else:
-                    print(f"[LIVE] BYPASS missing for: {name}")
+                    print(f"[LIVE] BYPASS missing for: {prev_name}")
 
-            # OFF -> NEXT + ON
-            else:
                 idx[mkey] = (idx[mkey] + 1) % len(active_list)
-                name, pc_on = active_list[idx[mkey]]
-                midi_pc(pc_on, LIVE_CC11_CHANNEL)
-                effect_on[mkey] = True
+            else:
+                # First press: do NOT advance -> activate preset 0
+                started[mkey] = True
 
-                last_pc_sent[mkey] = pc_on
-                last_state_txt[mkey] = "ON"
+            # 2) enable current preset
+            name, pc_on = active_list[idx[mkey]]
+            midi_pc(pc_on, LIVE_CC11_CHANNEL)
+            last_pc_sent[mkey] = pc_on
+            last_state_txt[mkey] = "ON"
 
-                cc11_val = (last_pot_8_reported * 127 + 127) // 255
-                if oled:
-                    oled_show_effect_live(cur_mode, name, pc_on, LIVE_CC11_CHANNEL + 1, "ON", last_pot_8_reported, cc11_val)
+            cc11_val = (last_pot_8_reported * 127 + 127) // 255
+            if oled:
+                oled_show_effect_live(cur_mode, name, pc_on, LIVE_CC11_CHANNEL + 1, "ON", last_pot_8_reported, cc11_val)
 
-                print(f"[LIVE] {cur_mode} ON      PC {pc_on:02d}  {name}")
+            print(f"[LIVE] {cur_mode} NEXT -> ON  PC {pc_on:02d}  {name}")
 
         last_fs_pressed = fs_pressed
 
@@ -998,22 +1072,45 @@ def live_monitor():
         time.sleep_ms(POLL_MS)
 
 # -----------------------------
-# MAIN
+# MAIN (MIDI ALWAYS FIRST; TESTS FAIL-SAFE)
 # -----------------------------
 try:
     print_pin_assignments()
 
-    oled_test_screen()
+    # Make MIDI "alive" immediately, regardless of OLED/SD/BT status.
+    midi_heartbeat()
 
-    sdcard_test()
-    bluetooth_test()
+    # OLED test (fail-safe)
+    try:
+        run_with_timeout(oled_test_screen, 1500, "OLED test")
+    except Exception as e:
+        print("[WARN] OLED test skipped:", e)
 
-    # NEW: unified testergebnis / report
+    # SD test (fail-safe) - even if it fails, MIDI continues.
+    try:
+        run_with_timeout(sdcard_test, 2000, "SD test")
+    except Exception as e:
+        print("[WARN] SD test skipped:", e)
+
+    # BT test (optional) - keep it commented unless needed
+    # try:
+    #     run_with_timeout(lambda timeout_cb: bluetooth_test(timeout_cb, duration_ms=6000), 6500, "BT test")
+    # except Exception as e:
+    #     print("[WARN] BT test skipped:", e)
+
     print_hw_report()
-    oled_hw_report_brief()
-    if oled:
-        oled_clear()
+    try:
+        oled_hw_report_brief()
+    except:
+        pass
 
+    if oled:
+        try:
+            oled_clear()
+        except:
+            pass
+
+    # MIDI tests + live mode run regardless of other failures.
     run_all_tests(TEST_CHANNEL)
     live_monitor()
 
