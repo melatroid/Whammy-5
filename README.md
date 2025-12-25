@@ -17,6 +17,3 @@ You lose your manufacturer's warranty.
 
 # Momantary       - In process
 # Holding (time)  - In process
-# Auto Divebomb (time) - In process
-# Shutter (time) - In process
-# Step Sequenzer - In process
