@@ -3,8 +3,8 @@ This is a Modification for the Digitech Whammy 5- <br>
 You get full Access to Midi Functions, with a Microcontroller inside. <br>
 Im Working on nice Software for Whammy, that you can easly update. <br>
 You need all modifications to use the featueres. Good Luck <br>
-
-
+# Basic Version for Free
+# Pro Version
 <br><br>
 <div align="center">
   <a href="https://www.nexosoft-engineering.de/neo/index.html">NEO Pro</a>
