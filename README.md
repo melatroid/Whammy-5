@@ -6,7 +6,7 @@ You need all modifications to use the featueres. Good Luck <br>
 # Basic Version for Free
 # Pro Version
 <br><br>
-<div align="center">
+<div align="left">
   <a href="https://www.nexosoft-engineering.de/neo/index.html">NEO Pro</a>
 </div>
 
