@@ -1,13 +1,20 @@
-# Melatroid - Whammy 5 MIDI/BLUETOOTH/SDCARD TEST SUITE - 1.02 
+# Melatroid - Whammy 5 MIDI/BLUETOOTH/SDCARD TEST SUITE - 1.02
+
+# OLED display on/off
+OLED_ENABLED = False
+
+# Bluetooth (HC-06) on/off
+BT_ENABLED = False
+
+# SD card (SPI) on/off
+SD_ENABLED = False
+
+# TEST mode: True = direct ON switching, False = ON + OFF/BYPASS
+TEST_DIRECT_MIDI_SWITCH = False
 
 from machine import Pin, ADC, UART, I2C, SPI
 import time
 import os
-
-# SET HERE False to True
-OLED_ENABLED = False
-BT_ENABLED = False
-SD_ENABLED = True
 
 # =========================================================
 # FAIL-SAFE / TIMEOUT HELPERS
@@ -116,7 +123,7 @@ OLED_SCL_PIN = 7
 OLED_W = 128
 OLED_H = 64
 OLED_FREQ = 400000
-OLED_ADDR_FALLBACK = 0x3C 
+OLED_ADDR_FALLBACK = 0x3C
 
 # -----------------------------
 # BLUETOOTH (HC-06) TEST CONFIG
@@ -155,16 +162,14 @@ PC_MINUS_ONE = False
 # -----------------------------
 # TEST TIMING
 # -----------------------------
-PC_STEP_DELAY_MS = 300
-EFFECT_OFF_DELAY_MS = 500
-BETWEEN_MODES_MS = 1000
+PC_STEP_DELAY_MS = 100
+EFFECT_OFF_DELAY_MS = 100
+BETWEEN_MODES_MS = 100
 
-# Send effect off (bypass PC) after active PC
+# Existing behavior switch (kept):
 SEND_EFFECT_OFF_AFTER_ACTIVE = True
 
-# -----------------------------
-# LIVE MODE (after tests)
-# -----------------------------
+
 DEBOUNCE_MS = 30
 POLL_MS = 5
 PRINT_EVERY_MS = 1000
@@ -393,6 +398,7 @@ def print_pin_assignments():
         print(f"  TX              : GP{MIDI_TX_PIN} (TX only)")
         print(f"  TEST CHANNEL    : {TEST_CHANNEL} (CH shown as {TEST_CHANNEL+1})")
         print(f"  PC_MINUS_ONE    : {PC_MINUS_ONE}")
+        print(f"  DIRECT_SWITCH   : {TEST_DIRECT_MIDI_SWITCH} (TEST mode: skip OFF)")
     else:
         print("MIDI             : DISABLED")
 
@@ -832,7 +838,8 @@ def test_mode(mode_name, active_list, bypass_list, ch0):
         time.sleep_ms(PC_STEP_DELAY_MS)
 
         bt_poll()
-        if SEND_EFFECT_OFF_AFTER_ACTIVE:
+        # OFF/BYPASS only if enabled AND not in direct-switch mode
+        if SEND_EFFECT_OFF_AFTER_ACTIVE and not TEST_DIRECT_MIDI_SWITCH:
             pc_off = bypass_lookup.get(name, None)
             if pc_off is not None:
                 midi_pc(pc_off, ch0)
@@ -848,6 +855,7 @@ def run_all_tests(ch0):
     print("=== Whammy 5: FULL TEST (CLASSIC + CHORDS) ===")
     print(f"UART={MIDI_UART_ID} TX=GP{MIDI_TX_PIN} (TX-only) baud={MIDI_BAUD}")
     print(f"TEST_CHANNEL={ch0} (shown as CH={ch0+1})  PC_MINUS_ONE={PC_MINUS_ONE}")
+    print(f"TEST_DIRECT_MIDI_SWITCH={TEST_DIRECT_MIDI_SWITCH}  (skip OFF in test)")
     print("Ctrl+C to stop.\n")
 
     if oled:
