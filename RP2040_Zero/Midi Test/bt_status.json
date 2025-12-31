@@ -1,7 +1,0 @@
-{
-  "available": true,
-  "uart": 1,
-  "baud": 9600,
-  "rx_working": true,
-  "last_ok": true
-}
