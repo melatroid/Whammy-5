@@ -86,6 +86,15 @@ except ImportError:
     DISPLAY_UI_AVAILABLE = False
     print("[WARN] display_ui.py not found -> UI helper disabled")
 
+try:
+    from pictures import START, START_W, START_H
+    PICTURES_AVAILABLE = True
+except ImportError:
+    START = None
+    START_W = 128
+    START_H = 64
+    PICTURES_AVAILABLE = False
+    print("[WARN] pictures.py not found -> start image disabled")
 # =========================================================
 # HARDWARE SELF-TEST STATUS (WITH REPORT)
 # =========================================================
@@ -481,6 +490,16 @@ except Exception as e:
     HW_STATUS["OLED"]["ok"] = False
     HW_STATUS["OLED"]["info"] = f"init failed/timeout: {e}"
     print("[WARN] OLED init skipped:", e)
+
+# -----------------------------
+try:
+    if oled and DISPLAY_UI_AVAILABLE and PICTURES_AVAILABLE and START is not None:
+        ui = display_ui.DisplayUI(oled, width=OLED_W, height=OLED_H)
+        ui.draw_bitmap(START, w=START_W, h=START_H, x=0, y=0, clear=True, show=True)
+        time.sleep_ms(3000)
+        ui.clear()  # optional: clear before continuing
+except Exception as e:
+    print("[WARN] start image skipped:", e)
 
 def oled_clear():
     if oled:
@@ -1163,7 +1182,6 @@ try:
         except:
             pass
 
-    # MIDI tests + live mode run regardless of other failures.
     run_all_tests(TEST_CHANNEL)
     live_monitor()
 
@@ -1171,4 +1189,3 @@ except KeyboardInterrupt:
     if oled:
         oled_show_preset("Stopped", "by user", 0, TEST_CHANNEL + 1, state="ON")
     print("\nStopped by user (Ctrl+C).")
-
