@@ -58,10 +58,6 @@ def run_with_timeout(fn, timeout_ms, name="task", *args, **kwargs):
             raise TimeoutError(f"{name} timeout before start")
         return fn(*args, **kwargs)
 
-# =========================================================
-# OPTIONAL MODULES
-# =========================================================
-
 try:
     import ssd1306
     SSD1306_AVAILABLE = True
@@ -95,6 +91,26 @@ except ImportError:
     START_H = 64
     PICTURES_AVAILABLE = False
     print("[WARN] pictures.py not found -> start image disabled")
+    
+try:
+    from animation import ANI1, ANI1_W, ANI1_H
+    ANIMATION_AVAILABLE = True
+except ImportError:
+    ANI1 = None
+    ANI1_W = 128
+    ANI1_H = 64
+    ANIMATION_AVAILABLE = False
+    print("[WARN] animation.py not found -> start animation disabled")
+    
+if ANIMATION_AVAILABLE and (ANI1 is not None):
+    fb = (ANI1_W * ((ANI1_H + 7)//8))
+    try:
+        n = len(ANI1)
+        frames = (n // fb) if (fb > 0 and n % fb == 0) else "??"
+        print("[ANI] bytes:", n, "frame_bytes:", fb, "frames:", frames)
+    except Exception as e:
+        print("[ANI] check failed:", e)
+
 # =========================================================
 # HARDWARE SELF-TEST STATUS (WITH REPORT)
 # =========================================================
@@ -309,6 +325,7 @@ bt_last_line = ""
 bt_last_bytes = b""
 bt_rx_count = 0
 
+
 def bt_poll(max_bytes=64):
     """
     Non-blocking poll of Bluetooth UART.
@@ -357,6 +374,39 @@ def bt_status_str():
     if bt_rx_count > 0:
         return f"{bt_rx_count}B"
     return "-"
+
+def boot_splash():
+    if not oled:
+        print("[BOOT] no oled -> skip splash")
+        return
+
+    # Debug: sieht man sofort ob Import geklappt hat
+    print("[BOOT] PICTURES_AVAILABLE:", PICTURES_AVAILABLE, "START is None:", START is None)
+    print("[BOOT] ANIMATION_AVAILABLE:", ANIMATION_AVAILABLE, "ANI1 is None:", ANI1 is None)
+
+    # --- Startbild ---
+    if PICTURES_AVAILABLE and (START is not None):
+        try:
+            buf = bytearray(START)  # mutable buffer for FrameBuffer
+            fb = framebuf.FrameBuffer(buf, START_W, START_H, framebuf.MONO_VLSB)
+            oled.fill(0)
+            oled.blit(fb, 0, 0)
+            oled.show()
+            time.sleep_ms(1200)
+        except Exception as e:
+            print("[BOOT] start image failed:", e)
+
+    # --- Animation ---
+    if ANIMATION_AVAILABLE and (ANI1 is not None):
+        try:
+            # spielt alle Frames einmal ab
+            oled_play_animation(oled, ANI1, w=ANI1_W, h=ANI1_H, fps=12, loop=False, clear=True)
+            time.sleep_ms(200)
+        except Exception as e:
+            print("[BOOT] animation failed:", e)
+
+
+
 
 def fmt_dbg(mode, state, pc, ch1, name, bt_info=""):
     """
@@ -490,21 +540,92 @@ except Exception as e:
     HW_STATUS["OLED"]["ok"] = False
     HW_STATUS["OLED"]["info"] = f"init failed/timeout: {e}"
     print("[WARN] OLED init skipped:", e)
-
-# -----------------------------
-try:
-    if oled and DISPLAY_UI_AVAILABLE and PICTURES_AVAILABLE and START is not None:
-        ui = display_ui.DisplayUI(oled, width=OLED_W, height=OLED_H)
-        ui.draw_bitmap(START, w=START_W, h=START_H, x=0, y=0, clear=True, show=True)
-        time.sleep_ms(3000)
-        ui.clear()  # optional: clear before continuing
-except Exception as e:
-    print("[WARN] start image skipped:", e)
-
+    
 def oled_clear():
     if oled:
         oled.fill(0)
         oled.show()
+        
+import framebuf
+
+def oled_fill_rect_safe(x, y, w, h, c):
+    """Fallback if driver has no fill_rect()."""
+    if not oled:
+        return
+    if hasattr(oled, "fill_rect"):
+        oled.fill_rect(x, y, w, h, c)
+        return
+    # pixel-fallback
+    for yy in range(y, y + h):
+        for xx in range(x, x + w):
+            try:
+                oled.pixel(xx, yy, c)
+            except:
+                pass
+
+def _frame_bytes(w, h):
+    pages = (h + 7) // 8
+    return w * pages
+
+def normalize_frames(anim_data, w, h):
+    """
+    Returns a list-like of frames.
+    Supports:
+      - bytes/bytearray: single frame OR flat animation buffer
+      - list/tuple of bytes-like: frames already separated
+    """
+    fb = _frame_bytes(w, h)
+
+    # already separated frames
+    if isinstance(anim_data, (list, tuple)):
+        return anim_data
+
+    # flat / single frame buffer
+    if isinstance(anim_data, (bytes, bytearray, memoryview)):
+        n = len(anim_data)
+        if n == fb:
+            return [anim_data]  # single frame
+        if n % fb == 0:
+            # flat animation: slice into frames (zero-copy views)
+            mv = memoryview(anim_data)
+            count = n // fb
+            return [mv[i*fb:(i+1)*fb] for i in range(count)]
+        raise ValueError("ANI buffer size does not match frame size")
+
+    raise TypeError("Unsupported animation data type")
+
+def oled_play_animation(oled, anim_data, w, h, x=0, y=0, fps=12, loop=False, clear=True):
+    """
+    Plays animation on SSD1306 using MONO_VLSB.
+    Avoids allocating a new buffer per frame by reusing one bytearray.
+    """
+    frames = normalize_frames(anim_data, w, h)
+    if not frames:
+        return
+
+    fb_len = _frame_bytes(w, h)
+
+    # reuse one mutable buffer for FrameBuffer (important!)
+    buf = bytearray(fb_len)
+    fb = framebuf.FrameBuffer(buf, w, h, framebuf.MONO_VLSB)
+
+    delay_ms = max(1, int(1000 // max(1, fps)))
+
+    while True:
+        for fr in frames:
+            # copy frame into reusable buffer
+            buf[:] = fr
+
+            if clear:
+                oled.fill(0)
+            oled.blit(fb, x, y)
+            oled.show()
+            time.sleep_ms(delay_ms)
+
+        if not loop:
+            break
+
+
 
 def _chunk_16(s: str):
     s = str(s)
@@ -601,17 +722,18 @@ def oled_test_screen(timeout_cb=None):
     oled.text(f"SCL GP{OLED_SCL_PIN}", 0, 36)
     oled.text("OLED is OK :)", 0, 48)
     oled.show()
-    time.sleep_ms(600)
+    time.sleep_ms(3000)
 
     oled.fill(0)
-    oled.text("Progress:", 0, 0)
+    oled.text("Load Whammy:", 0, 0)
+    
     oled.rect(0, 16, OLED_W, 12, 1)
     oled.show()
 
     for w in range(0, OLED_W - 2, 6):
         if timeout_cb and timeout_cb():
             raise TimeoutError("OLED test timeout during progress")
-        oled.fill_rect(1, 17, w, 10, 1)
+        oled_fill_rect_safe(1, 17, w, 10, 1)
         oled.show()
         time.sleep_ms(20)
 
@@ -1160,15 +1282,11 @@ try:
 
     # OLED test (fail-safe)
     try:
-        run_with_timeout(oled_test_screen, 1500, "OLED test")
+        run_with_timeout(oled_test_screen, 5000, "OLED test")
     except Exception as e:
         print("[WARN] OLED test skipped:", e)
 
-    # SD test (fail-safe) - even if it fails, MIDI continues.
-    try:
-        run_with_timeout(sdcard_test, 2000, "SD test")
-    except Exception as e:
-        print("[WARN] SD test skipped:", e)
+    boot_splash()
 
     print_hw_report()
     try:
