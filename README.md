@@ -3,6 +3,10 @@ This is a Modification for the Digitech Whammy 5- <br>
 You get full Access to Midi Functions, with a Microcontroller inside. <br>
 Im Working on nice Software for Whammy, that you can easly update. <br>
 You need all modifications to use the featueres. Good Luck <br>
+
+First working Version https://youtube.com/shorts/IK64kfcIJxg?si=UPolimbWAzZB3oC1
+
+
 # Basic Version for Free
 # Pro Version
 <div align="left">
