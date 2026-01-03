@@ -1,17 +1,13 @@
-# Melatroid - Whammy 5 MIDI TEST SUITE - 1.03 (BT/SD REMOVED)
+# Melatroid - Whammy 5 MIDI TEST SUITE - 1.04
 #
 # COPY ALL PY FILES TO RP2040!!!
 #
-# -----------------------------
-# PINS
-# -----------------------------
 PIN_FOOTSW = 7
 PIN_LAYER_SWITCH = 8
 PIN_POT = 29
-POT_DEADZONE_8BIT = 10   # first 10 + last 10 values ignored for preset selection
-# NEW: Bank select pins (Classic / Chords)
-PIN_MODE_CLASSIC = 10
-PIN_MODE_CHORDS  = 11
+POT_DEADZONE_8BIT = 10
+PIN_BANK_SWITCH = 6
+BANK_SWITCH_INVERT = False
 
 OLED_I2C_ID = 1
 OLED_SCL_PIN = 15
@@ -21,17 +17,14 @@ OLED_H = 64
 OLED_FREQ = 400000
 OLED_ADDR_FALLBACK = 0x3c
 
-# OLED display on/off
 OLED_ENABLED = True
 
-# TEST mode: True = direct ON switching, False = ON + OFF/BYPASS
 TEST_DIRECT_MIDI_SWITCH = True
 
 from machine import Pin, ADC, UART, I2C
 import time
 import framebuf
 
-# >>> MENU OUTSOURCED
 try:
     import ui_menu
     UI_MENU_AVAILABLE = True
@@ -40,19 +33,10 @@ except ImportError:
     UI_MENU_AVAILABLE = False
     print("[WARN] ui_menu.py not found -> menu disabled")
 
-# =========================================================
-# FAIL-SAFE / TIMEOUT HELPERS
-# =========================================================
-
 class TimeoutError(Exception):
     pass
 
 def run_with_timeout(fn, timeout_ms, name="task", *args, **kwargs):
-    """
-    Runs fn(*args, **kwargs) with a soft timeout.
-    IMPORTANT: If a driver blocks inside native code forever, MicroPython can't kill it.
-               But for our own loops and common drivers, this prevents long blocking.
-    """
     t0 = time.ticks_ms()
 
     def timeout_cb():
@@ -110,10 +94,6 @@ if ANIMATION_AVAILABLE and (ANI1 is not None):
     except Exception as e:
         print("[ANI] check failed:", e)
 
-# =========================================================
-# HARDWARE SELF-TEST STATUS (WITH REPORT)
-# =========================================================
-
 HW_STATUS = {
     "OLED":   {"ok": False, "weight": 35, "info": ""},
     "MIDI":   {"ok": False, "weight": 40, "info": ""},
@@ -144,9 +124,6 @@ def oled_hw_report_brief():
     oled.show()
     time.sleep_ms(1200)
 
-# -----------------------------
-# MIDI CONFIG
-# -----------------------------
 MIDI_ENABLED = True
 MIDI_UART_ID = 0
 MIDI_BAUD = 31250
@@ -155,9 +132,6 @@ MIDI_TX_PIN = 0
 TEST_CHANNEL = 0
 PC_MINUS_ONE = False
 
-# -----------------------------
-# TEST TIMING
-# -----------------------------
 PC_STEP_DELAY_MS = 100
 EFFECT_OFF_DELAY_MS = 100
 BETWEEN_MODES_MS = 100
@@ -179,9 +153,6 @@ LIVE_CH_CHORDS  = TEST_CHANNEL
 
 MENU_OPEN_HOLD_MS = 900
 
-# -----------------------------
-# WHAMMY 5 - OFFICIAL NAMES
-# -----------------------------
 DETUNE_NAMES = ["SHALLOW", "DEEP"]
 
 WHAMMY_NAMES = [
@@ -209,31 +180,22 @@ HARMONY_NAMES = [
     "▲OCT/OCT▼",
 ]
 
-# -----------------------------
-# HARDWARE INIT
-# -----------------------------
 footsw = Pin(PIN_FOOTSW, Pin.IN, Pin.PULL_UP)
 layer_sw = Pin(PIN_LAYER_SWITCH, Pin.IN, Pin.PULL_UP)
-
-mode_classic_sw = Pin(PIN_MODE_CLASSIC, Pin.IN, Pin.PULL_UP)
-mode_chords_sw  = Pin(PIN_MODE_CHORDS,  Pin.IN, Pin.PULL_UP)
+bank_sw = Pin(PIN_BANK_SWITCH, Pin.IN, Pin.PULL_UP)
 
 pot = ADC(Pin(PIN_POT))
 
 try:
     _ = footsw.value()
     _ = layer_sw.value()
-    _ = mode_classic_sw.value()
-    _ = mode_chords_sw.value()
+    _ = bank_sw.value()
     _ = pot.read_u16()
     HW_STATUS["INPUTS"]["ok"] = True
-    HW_STATUS["INPUTS"]["info"] = "footsw + layer + mode pins + pot OK"
+    HW_STATUS["INPUTS"]["info"] = "footsw + layer + bank pin + pot OK"
 except Exception as e:
     HW_STATUS["INPUTS"]["info"] = str(e)
 
-# =========================================================
-# MIDI (MUST START ASAP)
-# =========================================================
 midi = None
 if MIDI_ENABLED:
     try:
@@ -315,15 +277,12 @@ def print_dbg_header(ch1):
     print(fmt_dbg("MODE", "STATE", 0, ch1, "NAME"))
     print("-" * (DBG_COL_MODE + DBG_COL_STATE + DBG_COL_PC + DBG_COL_CH + DBG_COL_NAME + 12))
 
-# -----------------------------
-# PRINT ALL PIN ASSIGNMENTS (STARTUP)
-# -----------------------------
 def print_pin_assignments():
     print("\n=== PIN ASSIGNMENTS / CONFIG ===")
     print(f"MOMANTARY        : GP{PIN_FOOTSW} (IN, PULL_UP)")
     print(f"LAYER SWITCH     : GP{PIN_LAYER_SWITCH} (IN, PULL_UP)  [MENU HOLD]")
-    print(f"MODE CLASSIC SW  : GP{PIN_MODE_CLASSIC} (IN, PULL_UP)")
-    print(f"MODE CHORDS  SW  : GP{PIN_MODE_CHORDS} (IN, PULL_UP)")
+    print(f"BANK SWITCH      : GP{PIN_BANK_SWITCH} (IN, PULL_UP)  [to GND]")
+    print(f"BANK INVERT      : {BANK_SWITCH_INVERT}")
     print(f"POT (ADC)        : GP{PIN_POT} (ADC)")
 
     if OLED_ENABLED:
@@ -352,9 +311,6 @@ def print_pin_assignments():
 
     print("=== END CONFIG ===\n")
 
-# -----------------------------
-# OLED INIT + HELPERS (FAIL-SAFE INIT)
-# -----------------------------
 oled = None
 oled_addr = OLED_ADDR_FALLBACK
 
@@ -411,9 +367,6 @@ def oled_clear():
         oled.fill(0)
         oled.show()
 
-# =========================================================
-# OLED: ARROW GLYPHS (▲/▼) via 8x8 BITMAPS
-# =========================================================
 _ARROW_UP_8 = bytes([
     0b00011000,
     0b00111100,
@@ -547,9 +500,6 @@ def oled_show_preset(mode_name, preset_name, pc, ch1, state="ON"):
         y += 8
     oled.show()
 
-# =========================================================
-# OLED LIVE STATUS: PRESET NAME statt CC11
-# =========================================================
 def oled_show_realtime_status(momentary, layer_sw_val, mode, state, pc, pot_8bit, preset_name, ch1):
     if not oled:
         return
@@ -589,9 +539,6 @@ def oled_test_screen(timeout_cb=None):
 
     oled_clear()
 
-# -----------------------------
-# DEBOUNCE / ADC HELPERS
-# -----------------------------
 def debounce_init(pin):
     v = pin.value()
     now = time.ticks_ms()
@@ -612,9 +559,6 @@ def pressed_from_pullup(stable_raw):
 def adc_to_8bit(v_u16):
     return (v_u16 * 255 + 32767) // 65535
 
-# -----------------------------
-# PRESET MAPS (0-based)
-# -----------------------------
 def build_presets_classic():
     active = []
     bypass = []
@@ -623,11 +567,11 @@ def build_presets_classic():
         active.append((f"{name}", 0 + i))
         bypass.append((f"{name}", 22 + i))
 
-    active.append((f"DETUNE {DETUNE_NAMES[1]}", 10))  # DEEP
-    bypass.append((f"DETUNE {DETUNE_NAMES[1]}", 32))  # DEEP bypass
+    active.append((f"DETUNE {DETUNE_NAMES[1]}", 10))
+    bypass.append((f"DETUNE {DETUNE_NAMES[1]}", 32))
 
-    active.append((f"DETUNE {DETUNE_NAMES[0]}", 11))  # SHALLOW
-    bypass.append((f"DETUNE {DETUNE_NAMES[0]}", 33))  # SHALLOW bypass
+    active.append((f"DETUNE {DETUNE_NAMES[0]}", 11))
+    bypass.append((f"DETUNE {DETUNE_NAMES[0]}", 33))
 
     for i, name in enumerate(HARMONY_NAMES):
         active.append((f"HARMONY {name}", 12 + i))
@@ -643,11 +587,11 @@ def build_presets_chords():
         active.append((f"WHAMMY {name}", 42 + i))
         bypass.append((f"WHAMMY {name}", 63 + i))
 
-    active.append((f"DETUNE {DETUNE_NAMES[1]}", 52))  # DEEP
-    bypass.append((f"DETUNE {DETUNE_NAMES[1]}", 73))  # DEEP bypass
+    active.append((f"DETUNE {DETUNE_NAMES[1]}", 52))
+    bypass.append((f"DETUNE {DETUNE_NAMES[1]}", 73))
 
-    active.append((f"DETUNE {DETUNE_NAMES[0]}", 53))  # SHALLOW
-    bypass.append((f"DETUNE {DETUNE_NAMES[0]}", 74))  # SHALLOW bypass
+    active.append((f"DETUNE {DETUNE_NAMES[0]}", 53))
+    bypass.append((f"DETUNE {DETUNE_NAMES[0]}", 74))
 
     for i, name in enumerate(HARMONY_NAMES):
         active.append((f"HARMONY {name}", 54 + i))
@@ -661,9 +605,6 @@ def make_bypass_lookup(bypass_list):
         d[name] = pc
     return d
 
-# -----------------------------
-# TEST ROUTINES
-# -----------------------------
 def test_mode(mode_name, active_list, bypass_list, ch0):
     print(f"\n=== TEST MODE: {mode_name} | CH={ch0+1} ===")
 
@@ -715,28 +656,10 @@ def run_all_tests(ch0):
         time.sleep_ms(800)
         oled_clear()
 
-# -----------------------------
-# LIVE MODE
-# -----------------------------
 def live_monitor():
-    """
-    LIVE control scheme (FIXED):
-      - MODE selection via pins:
-          GP10 pressed -> CLASSIC
-          GP11 pressed -> CHORDS
-          (priority: CHORDS > CLASSIC; default CLASSIC)
-
-      - POT selects preset continuously
-      - MOMENTARY toggles ON/OFF for selected preset
-      - CC11 optional, still sent on pot movement
-      - OLED bottom line shows PRESET NAME (not CC11)
-
-      FIX 2026-01:
-        - Freeze selection briefly after toggle to avoid jitter-jumps.
-        - OLED PC shows selected ON preset PC (pc_on), not last bypass PC.
-    """
-    print("=== LIVE MODE: Pot Select + Momentary Toggle + Bank Pins ===")
-    print("MODE PINS: GP10=CLASSIC, GP11=CHORDS (prio: CHORDS)")
+    print("=== LIVE MODE: Pot Select + Momentary Toggle + Bank Switch ===")
+    print("BANK SWITCH: GP6 (PULL_UP) released/pressed selects bank")
+    print(f"BANK_SWITCH_INVERT={BANK_SWITCH_INVERT}")
     print("POT: selects target preset")
     print("MOMENTARY: toggles selected preset ON/OFF")
     print("POT -> CC11 (optional) on current bank channel")
@@ -775,12 +698,11 @@ def live_monitor():
     layer_hold_start = None
     block_until_layer_release = False
 
-    def bank_from_pins() -> str:
-        if mode_chords_sw.value() == 0:
-            return "CHORDS"
-        if mode_classic_sw.value() == 0:
-            return "CLASSIC"
-        return "CLASSIC"
+    def bank_from_switch() -> str:
+        pressed = (bank_sw.value() == 0)
+        if not BANK_SWITCH_INVERT:
+            return "CHORDS" if pressed else "CLASSIC"
+        return "CLASSIC" if pressed else "CHORDS"
 
     def bank_ctx(bank: str):
         if bank == "CHORDS":
@@ -808,11 +730,10 @@ def live_monitor():
         return (scaled * (n - 1) + (span // 2)) // span
 
     last_fs_pressed = False
-    last_bank = bank_from_pins()
+    last_bank = bank_from_switch()
     last_oled_tuple = None
     last_print_ms = time.ticks_ms()
 
-    # initial OLED
     if oled:
         debounce_update(layer_sw, ly_state, time.ticks_ms())
         ly_on = pressed_from_pullup(ly_state["stable"])
@@ -837,7 +758,6 @@ def live_monitor():
         fs_pressed = pressed_from_pullup(fs_state["stable"])
         ly_on = pressed_from_pullup(ly_state["stable"])
 
-        # MENU long-hold on LAYER
         if UI_MENU_AVAILABLE and ui_menu and ui_menu.enabled():
             if block_until_layer_release:
                 if not ly_on:
@@ -869,7 +789,7 @@ def live_monitor():
                     last_oled_tuple = None
                     continue
 
-        bank = bank_from_pins()
+        bank = bank_from_switch()
         active_list, bypass_lu, ch0 = bank_ctx(bank)
 
         if bank != last_bank:
@@ -887,7 +807,6 @@ def live_monitor():
             if LIVE_SEND_CC11 and MIDI_ENABLED and midi is not None:
                 midi_cc(11, cc11_val, ch0)
 
-        # selection update if not frozen
         if time.ticks_diff(now, freeze_sel_until_ms) >= 0:
             new_idx = pot8_to_index(filt8, len(active_list))
             if new_idx != sel_idx[bank]:
@@ -902,7 +821,6 @@ def live_monitor():
 
                 last_oled_tuple = None
 
-        # toggle on rising edge
         if fs_pressed and not last_fs_pressed:
             freeze_sel_until_ms = time.ticks_add(now, FREEZE_AFTER_TOGGLE_MS)
 
@@ -930,7 +848,6 @@ def live_monitor():
 
         last_fs_pressed = fs_pressed
 
-        # OLED update (show preset name!)
         name, pc_on = active_list[sel_idx[bank]]
         show_pc = pc_on
         show_state = last_state_txt[bank]
@@ -959,9 +876,6 @@ def live_monitor():
 
         time.sleep_ms(POLL_MS)
 
-# -----------------------------
-# MAIN
-# -----------------------------
 try:
     print_pin_assignments()
     midi_heartbeat()
@@ -985,7 +899,6 @@ try:
         except:
             pass
 
-    # Menu init remains, but WITHOUT BT/SD hooks
     if UI_MENU_AVAILABLE and ui_menu and oled and DISPLAY_UI_AVAILABLE and display_ui:
         try:
             ui_menu.init(
