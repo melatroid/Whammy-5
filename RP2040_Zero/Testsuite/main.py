@@ -7,7 +7,7 @@ PIN_LAYER_SWITCH = 8
 PIN_POT = 29
 POT_DEADZONE_8BIT = 10
 PIN_BANK_SWITCH = 6
-BANK_SWITCH_INVERT = False
+BANK_SWITCH_INVERT = True # Set to "False" it Classic and Chords Toogle is wrong invertet
 
 OLED_I2C_ID = 1
 OLED_SCL_PIN = 15
@@ -232,6 +232,31 @@ def midi_heartbeat():
         print("[MIDI] Heartbeat sent (PC0 + CC11=64).")
     except Exception as e:
         print("[MIDI] Heartbeat failed:", e)
+
+
+def oled_show_picture(image_name=None, ms=200):
+    if not oled:
+        return
+    try:
+        import pictures
+        name = None
+        if image_name and hasattr(pictures, image_name):
+            name = image_name
+        elif hasattr(pictures, "START"):
+            name = "START"
+        if not name:
+            return
+        data = getattr(pictures, name)
+        w = getattr(pictures, f"{name}_W", getattr(pictures, "START_W", OLED_W))
+        h = getattr(pictures, f"{name}_H", getattr(pictures, "START_H", OLED_H))
+        buf = bytearray(data)
+        fb0 = framebuf.FrameBuffer(buf, w, h, framebuf.MONO_VLSB)
+        oled.fill(0)
+        oled.blit(fb0, 0, 0)
+        oled.show()
+        time.sleep_ms(ms)
+    except:
+        pass
 
 def boot_splash():
     if not oled:
@@ -775,12 +800,27 @@ def live_monitor():
                     layer_hold_start = None
                     try:
                         if oled:
-                            oled_show_preset("MENU", "open...", 0, TEST_CHANNEL + 1, state="ON")
+                            oled_show_picture("MENU_IN", 200)
                             time.sleep_ms(200)
                     except:
                         pass
 
-                    ui_menu.open_blocking(_read_layer_pressed, _read_mom_pressed, _read_pot_u16, poll_ms=15)
+                    req = ui_menu.open_blocking(_read_layer_pressed, _read_mom_pressed, _read_pot_u16, poll_ms=15)
+                    if req == "playground":
+                        if oled:
+                            oled_show_preset("PLAYGROUND", "start", 0, TEST_CHANNEL + 1, state="ON")
+                            time.sleep_ms(600)
+                            oled_clear()
+                        fs_state = debounce_init(footsw)
+                        ly_state = debounce_init(layer_sw)
+                        last_fs_pressed = False
+                        block_until_layer_release = True
+                        last_oled_tuple = None
+                        continue
+                    try:
+                        oled_show_picture("MENU_OUT", 200)
+                    except:
+                        pass
 
                     fs_state = debounce_init(footsw)
                     ly_state = debounce_init(layer_sw)
