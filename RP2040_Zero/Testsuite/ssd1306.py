@@ -173,3 +173,9 @@ class SSD1306:
         self.fb.rect(x, y, w, h, col)
         if fill:
             self.fb.fill_rect(x, y, w, h, col)
+            
+    def blit(self, fbuf, x, y, key=-1):
+        # FrameBuffer kann FrameBuffer->FrameBuffer blitten
+        # (key wird bei MONO meist ignoriert, aber lassen wir drin)
+        self.fb.blit(fbuf, x, y, key)
+

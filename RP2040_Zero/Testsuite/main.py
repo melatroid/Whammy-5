@@ -1,4 +1,9 @@
-# Melatroid - Whammy 5 MIDI/BLUETOOTH/SDCARD TEST SUITE - 1.03
+# ============================
+# FILE 1/3: main.py
+# (Menu-Logik komplett ausgelagert -> ui_menu.py)
+# ============================
+
+# Melatroid - Whammy 5 MIDI TEST SUITE - 1.03 (BT/SD REMOVED)
 #
 # COPY ALL PY FILES TO RP2040!!!
 #
@@ -8,6 +13,10 @@
 PIN_FOOTSW = 7
 PIN_LAYER_SWITCH = 8
 PIN_POT = 29
+POT_DEADZONE_8BIT = 10   # first 10 + last 10 values ignored for preset selection
+# NEW: Bank select pins (Classic / Chords)
+PIN_MODE_CLASSIC = 10
+PIN_MODE_CHORDS  = 11
 
 OLED_I2C_ID = 1
 OLED_SCL_PIN = 15
@@ -17,22 +26,24 @@ OLED_H = 64
 OLED_FREQ = 400000
 OLED_ADDR_FALLBACK = 0x3c
 
-
 # OLED display on/off
 OLED_ENABLED = True
 
-# Bluetooth (HC-06) on/off
-BT_ENABLED = False
-
-# SD card (SPI) on/off
-SD_ENABLED = False
-
 # TEST mode: True = direct ON switching, False = ON + OFF/BYPASS
-TEST_DIRECT_MIDI_SWITCH = False
+TEST_DIRECT_MIDI_SWITCH = True
 
-from machine import Pin, ADC, UART, I2C, SPI
+from machine import Pin, ADC, UART, I2C
 import time
-import os
+import framebuf
+
+# >>> MENU OUTSOURCED
+try:
+    import ui_menu
+    UI_MENU_AVAILABLE = True
+except ImportError:
+    ui_menu = None
+    UI_MENU_AVAILABLE = False
+    print("[WARN] ui_menu.py not found -> menu disabled")
 
 # =========================================================
 # FAIL-SAFE / TIMEOUT HELPERS
@@ -53,10 +64,8 @@ def run_with_timeout(fn, timeout_ms, name="task", *args, **kwargs):
         return time.ticks_diff(time.ticks_ms(), t0) >= timeout_ms
 
     try:
-        # If the function accepts a timeout callback (recommended), pass it:
         return fn(timeout_cb, *args, **kwargs)
     except TypeError:
-        # Function doesn't accept timeout_cb; run it, but at least detect "already timed out"
         if timeout_cb():
             raise TimeoutError(f"{name} timeout before start")
         return fn(*args, **kwargs)
@@ -68,14 +77,6 @@ except ImportError:
     ssd1306 = None
     SSD1306_AVAILABLE = False
     print("[WARN] ssd1306.py not found -> OLED disabled")
-
-try:
-    import sdcard
-    SDCARD_AVAILABLE = True
-except ImportError:
-    sdcard = None
-    SDCARD_AVAILABLE = False
-    print("[WARN] sdcard.py not found -> SD disabled")
 
 try:
     import display_ui
@@ -94,7 +95,7 @@ except ImportError:
     START_H = 64
     PICTURES_AVAILABLE = False
     print("[WARN] pictures.py not found -> start image disabled")
-    
+
 try:
     from animation import ANI1, ANI1_W, ANI1_H
     ANIMATION_AVAILABLE = True
@@ -104,7 +105,7 @@ except ImportError:
     ANI1_H = 64
     ANIMATION_AVAILABLE = False
     print("[WARN] animation.py not found -> start animation disabled")
-    
+
 if ANIMATION_AVAILABLE and (ANI1 is not None):
     fb = (ANI1_W * ((ANI1_H + 7)//8))
     try:
@@ -119,11 +120,9 @@ if ANIMATION_AVAILABLE and (ANI1 is not None):
 # =========================================================
 
 HW_STATUS = {
-    "OLED":   {"ok": False, "weight": 20, "info": ""},
-    "SD":     {"ok": False, "weight": 25, "info": ""},
-    "BT":     {"ok": False, "weight": 20, "info": ""},
-    "MIDI":   {"ok": False, "weight": 20, "info": ""},
-    "INPUTS": {"ok": False, "weight": 15, "info": ""},
+    "OLED":   {"ok": False, "weight": 35, "info": ""},
+    "MIDI":   {"ok": False, "weight": 40, "info": ""},
+    "INPUTS": {"ok": False, "weight": 25, "info": ""},
 }
 
 def hw_score_percent():
@@ -138,7 +137,6 @@ def print_hw_report():
     print("=== END HARDWARE REPORT ===\n")
 
 def oled_hw_report_brief():
-    """Optional: show a short summary on the OLED."""
     if not oled:
         return
     ok = hw_score_percent()
@@ -146,34 +144,10 @@ def oled_hw_report_brief():
     oled.text("HW REPORT", 0, 0)
     oled.text(f"SCORE: {ok:3d}%", 0, 12)
     oled.text(f"OLED:{'OK' if HW_STATUS['OLED']['ok'] else 'NO'}", 0, 24)
-    oled.text(f"SD  :{'OK' if HW_STATUS['SD']['ok'] else 'NO'}", 0, 34)
-    oled.text(f"BT  :{'OK' if HW_STATUS['BT']['ok'] else 'NO'}", 0, 44)
-    oled.text(f"MIDI:{'OK' if HW_STATUS['MIDI']['ok'] else 'NO'}", 0, 54)
+    oled.text(f"MIDI:{'OK' if HW_STATUS['MIDI']['ok'] else 'NO'}", 0, 34)
+    oled.text(f"IN  :{'OK' if HW_STATUS['INPUTS']['ok'] else 'NO'}", 0, 44)
     oled.show()
     time.sleep_ms(1200)
-
-
-# -----------------------------
-# BLUETOOTH (HC-06) TEST CONFIG
-# -----------------------------
-BT_UART_ID = 1
-BT_BAUD = 9600
-
-# Default pins for UART1 (change if your wiring is different!)
-BT_TX_PIN = 8   # RP2040 TX -> HC-06 RXD
-BT_RX_PIN = 9   # RP2040 RX <- HC-06 TXD
-
-# -----------------------------
-# SD CARD (SPI) TEST CONFIG
-# -----------------------------
-SD_SPI_ID = 0
-
-# According to your breakout image (1528-4682-ND):
-SD_SCK_PIN  = 2   # CLK
-SD_MOSI_PIN = 3   # DI
-SD_MISO_PIN = 4   # DO
-SD_CS_PIN   = 1   # CS
-SD_MOUNT_PT = "/sd"
 
 # -----------------------------
 # MIDI CONFIG
@@ -193,7 +167,6 @@ PC_STEP_DELAY_MS = 100
 EFFECT_OFF_DELAY_MS = 100
 BETWEEN_MODES_MS = 100
 
-# Existing behavior switch (kept):
 SEND_EFFECT_OFF_AFTER_ACTIVE = True
 
 DEBOUNCE_MS = 30
@@ -204,13 +177,18 @@ POT_SMOOTH_ALPHA_NUM = 1
 POT_SMOOTH_ALPHA_DEN = 8
 POT_PRINT_THRESHOLD_8BIT = 3
 
-# Send CC11 when pot changes (live mode)
 LIVE_SEND_CC11 = True
-LIVE_CC11_CHANNEL = TEST_CHANNEL  # usually same channel as tests
+
+LIVE_CH_CLASSIC = TEST_CHANNEL
+LIVE_CH_CHORDS  = TEST_CHANNEL
+
+MENU_OPEN_HOLD_MS = 900
 
 # -----------------------------
-# WHAMMY 5 - OFFICIAL NAMES (as shown in the mapping graphic)
+# WHAMMY 5 - OFFICIAL NAMES
 # -----------------------------
+DETUNE_NAMES = ["SHALLOW", "DEEP"]
+
 WHAMMY_NAMES = [
     "▲ 2 OCT",
     "▲ OCT",
@@ -223,8 +201,6 @@ WHAMMY_NAMES = [
     "▼ 2 OCT",
     "DIVE BOMB",
 ]
-
-DETUNE_NAMES = ["SHALLOW", "DEEP"]
 
 HARMONY_NAMES = [
     "2ND/3RD",
@@ -243,22 +219,26 @@ HARMONY_NAMES = [
 # -----------------------------
 footsw = Pin(PIN_FOOTSW, Pin.IN, Pin.PULL_UP)
 layer_sw = Pin(PIN_LAYER_SWITCH, Pin.IN, Pin.PULL_UP)
+
+mode_classic_sw = Pin(PIN_MODE_CLASSIC, Pin.IN, Pin.PULL_UP)
+mode_chords_sw  = Pin(PIN_MODE_CHORDS,  Pin.IN, Pin.PULL_UP)
+
 pot = ADC(Pin(PIN_POT))
 
-# INPUTS TEST (status)
 try:
     _ = footsw.value()
     _ = layer_sw.value()
+    _ = mode_classic_sw.value()
+    _ = mode_chords_sw.value()
     _ = pot.read_u16()
     HW_STATUS["INPUTS"]["ok"] = True
-    HW_STATUS["INPUTS"]["info"] = "footsw + layer + pot OK"
+    HW_STATUS["INPUTS"]["info"] = "footsw + layer + mode pins + pot OK"
 except Exception as e:
     HW_STATUS["INPUTS"]["info"] = str(e)
 
 # =========================================================
 # MIDI (MUST START ASAP)
 # =========================================================
-
 midi = None
 if MIDI_ENABLED:
     try:
@@ -285,10 +265,6 @@ def midi_pc(pc, ch0):
     midi_write(bytes([0xC0 | (ch0 & 0x0F), send_pc & 0x7F]))
 
 def midi_heartbeat():
-    """
-    Sends a short recognizable burst right after boot,
-    so you can verify that MIDI TX is alive even if other tests fail.
-    """
     if not (MIDI_ENABLED and midi is not None):
         print("[MIDI] Heartbeat skipped (MIDI not available).")
         return
@@ -300,145 +276,61 @@ def midi_heartbeat():
     except Exception as e:
         print("[MIDI] Heartbeat failed:", e)
 
-# Bluetooth UART
-bt = None
-if BT_ENABLED:
-    try:
-        bt = UART(BT_UART_ID, baudrate=BT_BAUD, tx=Pin(BT_TX_PIN), rx=Pin(BT_RX_PIN))
-        # mark as available; detailed status set in bluetooth_test()
-        HW_STATUS["BT"]["info"] = f"UART{BT_UART_ID} init OK"
-    except Exception as e:
-        bt = None
-        HW_STATUS["BT"]["info"] = f"init failed: {e}"
-else:
-    HW_STATUS["BT"]["info"] = "disabled"
-
-# -----------------------------
-# UNIFORM CONSOLE DEBUG + BT POLL
-# -----------------------------
-DBG_COL_MODE = 8
-DBG_COL_STATE = 7
-DBG_COL_PC = 4
-DBG_COL_CH = 3
-DBG_COL_NAME = 28
-DBG_COL_BT = 26
-
-bt_rx_buf = b""
-bt_last_line = ""
-bt_last_bytes = b""
-bt_rx_count = 0
-
-
-def bt_poll(max_bytes=64):
-    """
-    Non-blocking poll of Bluetooth UART.
-    Stores last received chunk and tries to extract a 'last line'.
-    """
-    global bt_rx_buf, bt_last_line, bt_last_bytes, bt_rx_count
-
-    if not (BT_ENABLED and bt is not None):
-        return False
-
-    if not bt.any():
-        return False
-
-    data = bt.read(max_bytes)
-    if not data:
-        return False
-
-    bt_last_bytes = data
-    bt_rx_count += len(data)
-    bt_rx_buf += data
-
-    # Keep buffer bounded
-    if len(bt_rx_buf) > 512:
-        bt_rx_buf = bt_rx_buf[-512:]
-
-    # Extract last line (split by \n or \r)
-    try:
-        txt = bt_rx_buf.decode(errors="ignore")
-        txt = txt.replace("\r", "\n")
-        lines = [ln for ln in txt.split("\n") if ln.strip() != ""]
-        if lines:
-            bt_last_line = lines[-1][-DBG_COL_BT:]
-    except:
-        bt_last_line = repr(bt_last_bytes)[-DBG_COL_BT:]
-
-    return True
-
-def bt_status_str():
-    """
-    Short status string for debug column.
-    """
-    if not (BT_ENABLED and bt is not None):
-        return "disabled"
-    if bt_last_line:
-        return bt_last_line
-    if bt_rx_count > 0:
-        return f"{bt_rx_count}B"
-    return "-"
-
 def boot_splash():
     if not oled:
         print("[BOOT] no oled -> skip splash")
         return
 
-    # Debug: sieht man sofort ob Import geklappt hat
     print("[BOOT] PICTURES_AVAILABLE:", PICTURES_AVAILABLE, "START is None:", START is None)
     print("[BOOT] ANIMATION_AVAILABLE:", ANIMATION_AVAILABLE, "ANI1 is None:", ANI1 is None)
 
-    # --- Startbild ---
     if PICTURES_AVAILABLE and (START is not None):
         try:
-            buf = bytearray(START)  # mutable buffer for FrameBuffer
-            fb = framebuf.FrameBuffer(buf, START_W, START_H, framebuf.MONO_VLSB)
+            buf = bytearray(START)
+            fb0 = framebuf.FrameBuffer(buf, START_W, START_H, framebuf.MONO_VLSB)
             oled.fill(0)
-            oled.blit(fb, 0, 0)
+            oled.blit(fb0, 0, 0)
             oled.show()
             time.sleep_ms(1200)
         except Exception as e:
             print("[BOOT] start image failed:", e)
 
-    # --- Animation ---
     if ANIMATION_AVAILABLE and (ANI1 is not None):
         try:
-            # spielt alle Frames einmal ab
             oled_play_animation(oled, ANI1, w=ANI1_W, h=ANI1_H, fps=12, loop=False, clear=True)
             time.sleep_ms(200)
         except Exception as e:
             print("[BOOT] animation failed:", e)
 
+DBG_COL_MODE = 8
+DBG_COL_STATE = 7
+DBG_COL_PC = 4
+DBG_COL_CH = 3
+DBG_COL_NAME = 28
 
-
-
-def fmt_dbg(mode, state, pc, ch1, name, bt_info=""):
-    """
-    Builds a fixed-width debug line.
-    """
+def fmt_dbg(mode, state, pc, ch1, name):
     mode_s = f"{str(mode):<{DBG_COL_MODE}}"
     state_s = f"{str(state):<{DBG_COL_STATE}}"
     pc_s = f"{int(pc):>{DBG_COL_PC}d}"
     ch_s = f"{int(ch1):>{DBG_COL_CH}d}"
     name_s = f"{str(name):<{DBG_COL_NAME}}"
-    bt_s = f"{str(bt_info):<{DBG_COL_BT}}"
-    return f"{mode_s} {state_s} PC:{pc_s} CH:{ch_s} {name_s} | BT:{bt_s}"
+    return f"{mode_s} {state_s} PC:{pc_s} CH:{ch_s} {name_s}"
 
 def print_dbg_header(ch1):
-    print(fmt_dbg("MODE", "STATE", 0, ch1, "NAME", "LAST_RX"))
-    print("-" * (DBG_COL_MODE + DBG_COL_STATE + DBG_COL_PC + DBG_COL_CH + DBG_COL_NAME + DBG_COL_BT + 20))
+    print(fmt_dbg("MODE", "STATE", 0, ch1, "NAME"))
+    print("-" * (DBG_COL_MODE + DBG_COL_STATE + DBG_COL_PC + DBG_COL_CH + DBG_COL_NAME + 12))
 
 # -----------------------------
 # PRINT ALL PIN ASSIGNMENTS (STARTUP)
 # -----------------------------
 def print_pin_assignments():
     print("\n=== PIN ASSIGNMENTS / CONFIG ===")
-
-    # Digital inputs + analog
     print(f"MOMANTARY        : GP{PIN_FOOTSW} (IN, PULL_UP)")
-    print(f"LAYER SWITCH     : GP{PIN_LAYER_SWITCH} (IN, PULL_UP)")
+    print(f"LAYER SWITCH     : GP{PIN_LAYER_SWITCH} (IN, PULL_UP)  [MENU HOLD]")
+    print(f"MODE CLASSIC SW  : GP{PIN_MODE_CLASSIC} (IN, PULL_UP)")
+    print(f"MODE CHORDS  SW  : GP{PIN_MODE_CHORDS} (IN, PULL_UP)")
     print(f"POT (ADC)        : GP{PIN_POT} (ADC)")
 
-    # OLED
     if OLED_ENABLED:
         print("OLED             : ENABLED")
         print(f"  I2C ID          : {OLED_I2C_ID}")
@@ -450,7 +342,6 @@ def print_pin_assignments():
     else:
         print("OLED             : DISABLED")
 
-    # MIDI
     if MIDI_ENABLED:
         print("MIDI             : ENABLED")
         print(f"  UART ID         : {MIDI_UART_ID}")
@@ -459,37 +350,15 @@ def print_pin_assignments():
         print(f"  TEST CHANNEL    : {TEST_CHANNEL} (CH shown as {TEST_CHANNEL+1})")
         print(f"  PC_MINUS_ONE    : {PC_MINUS_ONE}")
         print(f"  DIRECT_SWITCH   : {TEST_DIRECT_MIDI_SWITCH} (TEST mode: skip OFF)")
+        print(f"  LIVE_CH_CLASSIC : {LIVE_CH_CLASSIC} (CH shown as {LIVE_CH_CLASSIC+1})")
+        print(f"  LIVE_CH_CHORDS  : {LIVE_CH_CHORDS} (CH shown as {LIVE_CH_CHORDS+1})")
     else:
         print("MIDI             : DISABLED")
-
-    # Bluetooth
-    if BT_ENABLED:
-        print("BLUETOOTH (HC-06) : ENABLED")
-        print(f"  UART ID         : {BT_UART_ID}")
-        print(f"  BAUD            : {BT_BAUD}")
-        print(f"  TX              : GP{BT_TX_PIN} (RP2040 TX -> HC-06 RXD)")
-        print(f"  RX              : GP{BT_RX_PIN} (RP2040 RX <- HC-06 TXD)")
-    else:
-        print("BLUETOOTH (HC-06) : DISABLED")
-
-    # SD Card
-    if SD_ENABLED:
-        print("SD CARD (SPI)     : ENABLED")
-        print(f"  SPI ID          : {SD_SPI_ID}")
-        print(f"  SCK             : GP{SD_SCK_PIN}")
-        print(f"  MOSI            : GP{SD_MOSI_PIN}")
-        print(f"  MISO            : GP{SD_MISO_PIN}")
-        print(f"  CS              : GP{SD_CS_PIN}")
-        print(f"  MOUNT           : {SD_MOUNT_PT}")
-    else:
-        print("SD CARD (SPI)     : DISABLED")
 
     print("=== END CONFIG ===\n")
 
 # -----------------------------
 # OLED INIT + HELPERS (FAIL-SAFE INIT)
-#   Uses EXACT working config:
-#     i2c = I2C(1, scl=Pin(15), sda=Pin(14), freq=400000)
 # -----------------------------
 oled = None
 oled_addr = OLED_ADDR_FALLBACK
@@ -505,11 +374,9 @@ def _oled_init(timeout_cb=None):
 
     i2c = I2C(OLED_I2C_ID, scl=Pin(OLED_SCL_PIN), sda=Pin(OLED_SDA_PIN), freq=OLED_FREQ)
     devices = i2c.scan()
-
     if not devices:
         raise RuntimeError("No I2C devices found")
 
-    # Prefer 0x3C/0x3D, else first found
     addr = None
     for preferred in (0x3C, 0x3D):
         if preferred in devices:
@@ -543,22 +410,69 @@ except Exception as e:
     HW_STATUS["OLED"]["ok"] = False
     HW_STATUS["OLED"]["info"] = f"init failed/timeout: {e}"
     print("[WARN] OLED init skipped:", e)
-    
+
 def oled_clear():
     if oled:
         oled.fill(0)
         oled.show()
-        
-import framebuf
+
+# =========================================================
+# OLED: ARROW GLYPHS (▲/▼) via 8x8 BITMAPS
+# =========================================================
+_ARROW_UP_8 = bytes([
+    0b00011000,
+    0b00111100,
+    0b01111110,
+    0b00011000,
+    0b00011000,
+    0b00011000,
+    0b00011000,
+    0b00000000,
+])
+
+_ARROW_DN_8 = bytes([
+    0b00011000,
+    0b00011000,
+    0b00011000,
+    0b00011000,
+    0b01111110,
+    0b00111100,
+    0b00011000,
+    0b00000000,
+])
+
+_fb_arrow_up = framebuf.FrameBuffer(bytearray(_ARROW_UP_8), 8, 8, framebuf.MONO_HLSB)
+_fb_arrow_dn = framebuf.FrameBuffer(bytearray(_ARROW_DN_8), 8, 8, framebuf.MONO_HLSB)
+
+def oled_draw_arrow(x, y, direction):
+    if not oled:
+        return
+    if direction == "up":
+        oled.blit(_fb_arrow_up, x, y)
+    else:
+        oled.blit(_fb_arrow_dn, x, y)
+
+def oled_text_with_arrows(s, x, y):
+    if not oled:
+        return
+    cx = x
+    for ch in str(s):
+        if ch == "▲":
+            oled_draw_arrow(cx, y, "up")
+            cx += 8
+        elif ch == "▼":
+            oled_draw_arrow(cx, y, "down")
+            cx += 8
+        else:
+            oled.text(ch, cx, y)
+            cx += 8
 
 def oled_fill_rect_safe(x, y, w, h, c):
-    """Fallback if driver has no fill_rect()."""
     if not oled:
         return
     if hasattr(oled, "fill_rect"):
         oled.fill_rect(x, y, w, h, c)
         return
-    # pixel-fallback
     for yy in range(y, y + h):
         for xx in range(x, x + w):
             try:
@@ -571,25 +485,16 @@ def _frame_bytes(w, h):
     return w * pages
 
 def normalize_frames(anim_data, w, h):
-    """
-    Returns a list-like of frames.
-    Supports:
-      - bytes/bytearray: single frame OR flat animation buffer
-      - list/tuple of bytes-like: frames already separated
-    """
     fb = _frame_bytes(w, h)
 
-    # already separated frames
     if isinstance(anim_data, (list, tuple)):
         return anim_data
 
-    # flat / single frame buffer
     if isinstance(anim_data, (bytes, bytearray, memoryview)):
         n = len(anim_data)
         if n == fb:
-            return [anim_data]  # single frame
+            return [anim_data]
         if n % fb == 0:
-            # flat animation: slice into frames (zero-copy views)
             mv = memoryview(anim_data)
             count = n // fb
             return [mv[i*fb:(i+1)*fb] for i in range(count)]
@@ -598,17 +503,11 @@ def normalize_frames(anim_data, w, h):
     raise TypeError("Unsupported animation data type")
 
 def oled_play_animation(oled, anim_data, w, h, x=0, y=0, fps=12, loop=False, clear=True):
-    """
-    Plays animation on SSD1306 using MONO_VLSB.
-    Avoids allocating a new buffer per frame by reusing one bytearray.
-    """
     frames = normalize_frames(anim_data, w, h)
     if not frames:
         return
 
     fb_len = _frame_bytes(w, h)
-
-    # reuse one mutable buffer for FrameBuffer (important!)
     buf = bytearray(fb_len)
     fb = framebuf.FrameBuffer(buf, w, h, framebuf.MONO_VLSB)
 
@@ -616,9 +515,7 @@ def oled_play_animation(oled, anim_data, w, h, x=0, y=0, fps=12, loop=False, cle
 
     while True:
         for fr in frames:
-            # copy frame into reusable buffer
             buf[:] = fr
-
             if clear:
                 oled.fill(0)
             oled.blit(fb, x, y)
@@ -628,8 +525,6 @@ def oled_play_animation(oled, anim_data, w, h, x=0, y=0, fps=12, loop=False, cle
         if not loop:
             break
 
-
-
 def _chunk_16(s: str):
     s = str(s)
     if not s:
@@ -637,10 +532,6 @@ def _chunk_16(s: str):
     return [s[i:i+16] for i in range(0, len(s), 16)]
 
 def oled_show_preset(mode_name, preset_name, pc, ch1, state="ON"):
-    """
-    Shows preset name nicely wrapped across 2 lines.
-    state: "ON" or "BYPASS"
-    """
     if not oled:
         return
 
@@ -657,42 +548,14 @@ def oled_show_preset(mode_name, preset_name, pc, ch1, state="ON"):
     oled.fill(0)
     y = 0
     for s in lines[:6]:
-        oled.text(s, 0, y)
-        y += 10
+        oled_text_with_arrows(s, 0, y)
+        y += 8
     oled.show()
 
-def oled_show_effect_live(mode_name, preset_name, pc, ch1, state, pot_8bit, cc11_val):
-    """
-    LIVE screen that shows the currently selected EFFECT,
-    plus an extra 6th line with POT/CC11.
-    """
-    if not oled:
-        return
-
-    lines = []
-    lines.append(mode_name[:16])
-
-    wrapped = _chunk_16(preset_name)
-    lines.append(wrapped[0][:16])
-    lines.append(wrapped[1][:16] if len(wrapped) > 1 else "")
-
-    lines.append(f"{state[:6]:6} PC:{pc:02d}"[:16])
-    lines.append(f"CH:{ch1:02d}"[:16])
-
-    # 6th line: POT (0..255) + CC11 (0..127)
-    lines.append(f"P:{pot_8bit:03d} C:{cc11_val:03d}"[:16])
-
-    oled.fill(0)
-    y = 0
-    for s in lines[:6]:
-        oled.text(s, 0, y)
-        y += 10
-    oled.show()
-
-def oled_show_realtime_status(momentary, layer_sw_val, mode, state, pc, pot_8bit, cc11_val, ch1):
-    """
-    Shows live realtime values (buttons + pot) compactly on 6 lines (16 chars each).
-    """
+# =========================================================
+# OLED LIVE STATUS: PRESET NAME statt CC11
+# =========================================================
+def oled_show_realtime_status(momentary, layer_sw_val, mode, state, pc, pot_8bit, preset_name, ch1):
     if not oled:
         return
 
@@ -701,13 +564,13 @@ def oled_show_realtime_status(momentary, layer_sw_val, mode, state, pc, pot_8bit
     l3 = f"STATE:{state}"[:16]
     l4 = f"PC:{pc:02d}  CH:{ch1:02d}"[:16]
     l5 = f"POT:{pot_8bit:03d}"[:16]
-    l6 = f"CC11:{cc11_val:03d}"[:16]
+    l6 = f"{str(preset_name)[:16]}"
 
     oled.fill(0)
     y = 0
     for s in (l1, l2, l3, l4, l5, l6):
-        oled.text(s, 0, y)
-        y += 10
+        oled_text_with_arrows(s, 0, y)
+        y += 8
     oled.show()
 
 def oled_test_screen(timeout_cb=None):
@@ -719,17 +582,6 @@ def oled_test_screen(timeout_cb=None):
         raise TimeoutError("OLED test timeout before start")
 
     oled.fill(0)
-    oled.text("SSD1306 TEST", 0, 0)
-    oled.text(f"I2C{OLED_I2C_ID} {hex(oled_addr)}", 0, 12)
-    oled.text(f"SDA GP{OLED_SDA_PIN}", 0, 24)
-    oled.text(f"SCL GP{OLED_SCL_PIN}", 0, 36)
-    oled.text("OLED is OK :)", 0, 48)
-    oled.show()
-    time.sleep_ms(3000)
-
-    oled.fill(0)
-    oled.text("Load Whammy:", 0, 0)
-    
     oled.rect(0, 16, OLED_W, 12, 1)
     oled.show()
 
@@ -740,168 +592,7 @@ def oled_test_screen(timeout_cb=None):
         oled.show()
         time.sleep_ms(20)
 
-    oled.fill(0)
-    oled.text("SSD1306 TEST", 0, 0)
-    oled.text("DONE", 0, 12)
-    oled.show()
-    time.sleep_ms(300)
     oled_clear()
-
-# -----------------------------
-# SD + BLUETOOTH TESTS (FAIL-SAFE)
-# -----------------------------
-def bluetooth_test(timeout_cb=None, duration_ms=6000):
-    global bt_rx_buf, bt_last_line, bt_last_bytes, bt_rx_count
-
-    print("\n=== BLUETOOTH TEST (HC-06) ===")
-    if not (BT_ENABLED and bt is not None):
-        print("Bluetooth not enabled/available.")
-        HW_STATUS["BT"]["ok"] = False
-        if "disabled" not in HW_STATUS["BT"]["info"]:
-            HW_STATUS["BT"]["info"] = "not available"
-        return
-
-    bt_rx_buf = b""
-    bt_last_line = ""
-    bt_last_bytes = b""
-    bt_rx_count = 0
-
-    if oled:
-        oled_show_preset("BT TEST", "send/read", 0, 0, state="ON")
-
-    # Mark as OK if UART exists and TX works; RX is a bonus
-    HW_STATUS["BT"]["ok"] = True
-    HW_STATUS["BT"]["info"] = f"UART{BT_UART_ID} init OK"
-
-    try:
-        bt.write(b"HC-06 TEST: hello from RP2040!\r\n")
-        print("BT: sent test line. Pair phone/PC and open serial terminal.")
-        print("BT: send something back during the next seconds...")
-        HW_STATUS["BT"]["info"] = "TX OK (waiting RX)"
-    except Exception as e:
-        print("BT write failed:", e)
-        HW_STATUS["BT"]["ok"] = False
-        HW_STATUS["BT"]["info"] = f"write failed: {e}"
-
-    t0 = time.ticks_ms()
-    while time.ticks_diff(time.ticks_ms(), t0) < duration_ms:
-        if timeout_cb and timeout_cb():
-            raise TimeoutError("BT test timeout")
-        bt_poll()
-        if bt_last_bytes:
-            print("BT RX:", bt_last_bytes)
-            bt_last_bytes = b""
-        time.sleep_ms(20)
-
-    if HW_STATUS["BT"]["ok"]:
-        if bt_rx_count > 0:
-            print("BT received bytes:", bt_rx_count)
-            print("BT last line:", bt_last_line if bt_last_line else "-")
-            HW_STATUS["BT"]["info"] = f"TX OK, {bt_rx_count} bytes RX"
-            if oled:
-                oled_show_preset("BT TEST", "RX OK", 0, 0, state="ON")
-        else:
-            print("BT: no data received. Send something from phone/PC while test runs.\n")
-            HW_STATUS["BT"]["info"] = "TX OK, no RX data"
-            if oled:
-                oled_show_preset("BT TEST", "no RX", 0, 0, state="ON")
-
-    time.sleep_ms(400)
-    if oled:
-        oled_clear()
-
-def sdcard_test(timeout_cb=None):
-    print("\n=== SD CARD TEST (SPI) ===")
-
-    if not SD_ENABLED:
-        print("SD disabled.")
-        HW_STATUS["SD"]["ok"] = False
-        HW_STATUS["SD"]["info"] = "disabled"
-        return
-
-    if sdcard is None:
-        print("sdcard.py not found -> copy sdcard.py into your project.")
-        HW_STATUS["SD"]["ok"] = False
-        HW_STATUS["SD"]["info"] = "sdcard.py missing"
-        return
-
-    if oled:
-        oled_show_preset("SD TEST", "init...", 0, 0, state="ON")
-
-    if timeout_cb and timeout_cb():
-        raise TimeoutError("SD test timeout before start")
-
-    try:
-        spi = SPI(
-            SD_SPI_ID,
-            baudrate=10_000_000,
-            polarity=0,
-            phase=0,
-            sck=Pin(SD_SCK_PIN),
-            mosi=Pin(SD_MOSI_PIN),
-            miso=Pin(SD_MISO_PIN),
-        )
-        cs = Pin(SD_CS_PIN, Pin.OUT, value=1)
-
-        if timeout_cb and timeout_cb():
-            raise TimeoutError("SD test timeout after SPI init")
-
-        sd = sdcard.SDCard(spi, cs)
-        vfs = os.VfsFat(sd)
-
-        if timeout_cb and timeout_cb():
-            raise TimeoutError("SD test timeout after SDCard init")
-
-        try:
-            os.umount(SD_MOUNT_PT)
-        except:
-            pass
-
-        os.mount(vfs, SD_MOUNT_PT)
-
-        if timeout_cb and timeout_cb():
-            raise TimeoutError("SD test timeout after mount")
-
-        print("Mounted SD at", SD_MOUNT_PT)
-
-        # Listing can be slow on some cards; keep it bounded
-        try:
-            root = os.listdir(SD_MOUNT_PT)
-            print("Root:", root)
-        except Exception as e:
-            print("[WARN] listdir failed:", e)
-
-        fn = SD_MOUNT_PT + "/sd_test.txt"
-        with open(fn, "w") as f:
-            f.write("SD OK - hello!\n")
-
-        if timeout_cb and timeout_cb():
-            raise TimeoutError("SD test timeout after write")
-
-        with open(fn, "r") as f:
-            content = f.read()
-
-        print("Read back:", repr(content))
-
-        os.umount(SD_MOUNT_PT)
-        print("Unmounted SD.")
-
-        HW_STATUS["SD"]["ok"] = True
-        HW_STATUS["SD"]["info"] = "mount + rw OK"
-
-        if oled:
-            oled_show_preset("SD TEST", "OK", 0, 0, state="ON")
-
-    except Exception as e:
-        print("SD TEST FAILED/SKIPPED:", e)
-        HW_STATUS["SD"]["ok"] = False
-        HW_STATUS["SD"]["info"] = str(e)
-        if oled:
-            oled_show_preset("SD TEST", "FAILED", 0, 0, state="ON")
-
-    time.sleep_ms(300)
-    if oled:
-        oled_clear()
 
 # -----------------------------
 # DEBOUNCE / ADC HELPERS
@@ -930,18 +621,12 @@ def adc_to_8bit(v_u16):
 # PRESET MAPS (0-based)
 # -----------------------------
 def build_presets_classic():
-    """
-    CLASSIC (0-based send map):
-      WHAMMY Active: 0..9     | Bypass: 22..31
-      DETUNE Active: SHALLOW=11, DEEP=10 | Bypass: SHALLOW=33, DEEP=32
-      HARMONY Active: 12..20  | Bypass: 34..42
-    """
     active = []
     bypass = []
 
     for i, name in enumerate(WHAMMY_NAMES):
-        active.append((f"WHAMMY {name}", 0 + i))
-        bypass.append((f"WHAMMY {name}", 22 + i))
+        active.append((f"{name}", 0 + i))
+        bypass.append((f"{name}", 22 + i))
 
     active.append((f"DETUNE {DETUNE_NAMES[1]}", 10))  # DEEP
     bypass.append((f"DETUNE {DETUNE_NAMES[1]}", 32))  # DEEP bypass
@@ -956,12 +641,6 @@ def build_presets_classic():
     return active, bypass
 
 def build_presets_chords():
-    """
-    CHORDS (0-based send map = manual minus 1):
-      WHAMMY Active: 42..51  | Bypass: 63..72
-      DETUNE Active: SHALLOW=53, DEEP=52 | Bypass: SHALLOW=74, DEEP=73
-      HARMONY Active: 54..62 | Bypass: 75..83
-    """
     active = []
     bypass = []
 
@@ -1003,25 +682,19 @@ def test_mode(mode_name, active_list, bypass_list, ch0):
 
     for name, pc_on in active_list:
         midi_pc(pc_on, ch0)
-        bt_poll()
-        print(fmt_dbg(mode_name[:DBG_COL_MODE], "ON", pc_on, ch0 + 1, name[:DBG_COL_NAME], bt_status_str()))
+        print(fmt_dbg(mode_name[:DBG_COL_MODE], "ON", pc_on, ch0 + 1, name[:DBG_COL_NAME]))
         if oled:
             oled_show_preset(mode_name, name, pc_on, ch0 + 1, state="ON")
         time.sleep_ms(PC_STEP_DELAY_MS)
 
-        bt_poll()
-        # OFF/BYPASS only if enabled AND not in direct-switch mode
         if SEND_EFFECT_OFF_AFTER_ACTIVE and not TEST_DIRECT_MIDI_SWITCH:
             pc_off = bypass_lookup.get(name, None)
             if pc_off is not None:
                 midi_pc(pc_off, ch0)
-                bt_poll()
-                print(fmt_dbg(mode_name[:DBG_COL_MODE], "OFF", pc_off, ch0 + 1, name[:DBG_COL_NAME], bt_status_str()))
+                print(fmt_dbg(mode_name[:DBG_COL_MODE], "OFF", pc_off, ch0 + 1, name[:DBG_COL_NAME]))
                 if oled:
                     oled_show_preset(mode_name, name, pc_off, ch0 + 1, state="BYPASS")
                 time.sleep_ms(EFFECT_OFF_DELAY_MS)
-
-                bt_poll()
 
 def run_all_tests(ch0):
     print("=== Whammy 5: FULL TEST (CLASSIC + CHORDS) ===")
@@ -1041,12 +714,6 @@ def run_all_tests(ch0):
     time.sleep_ms(BETWEEN_MODES_MS)
     test_mode("CHORDS", chords_active, chords_bypass, ch0)
 
-    if BT_ENABLED and bt is not None:
-        bt_poll()
-        print("\n=== BT SUMMARY (END OF TEST LOOP) ===")
-        print("BT total RX bytes:", bt_rx_count)
-        print("BT last line:", bt_last_line if bt_last_line else "-")
-
     print("\n=== TESTS FINISHED ===\n")
     if oled:
         oled_show_preset("TESTS", "FINISHED", 0, ch0 + 1, state="ON")
@@ -1054,30 +721,31 @@ def run_all_tests(ch0):
         oled_clear()
 
 # -----------------------------
-# LIVE MODE (realtime values + pot CC11)
+# LIVE MODE
 # -----------------------------
 def live_monitor():
     """
-    LIVE control scheme:
-      - LAYER SWITCH selects MODE:
-          layer pressed (LY=1)  -> CHORDS
-          layer not pressed     -> CLASSIC
+    LIVE control scheme (FIXED):
+      - MODE selection via pins:
+          GP10 pressed -> CLASSIC
+          GP11 pressed -> CHORDS
+          (priority: CHORDS > CLASSIC; default CLASSIC)
 
-      - MOMENTARY (footswitch):
-          ALWAYS cycles to NEXT preset and turns it ON.
-          It will BYPASS the previously active preset (in that mode) first.
-          First press in a mode activates preset 0 (no skipping).
+      - POT selects preset continuously
+      - MOMENTARY toggles ON/OFF for selected preset
+      - CC11 optional, still sent on pot movement
+      - OLED bottom line shows PRESET NAME (not CC11)
 
-      - POT controls CC11 continuously
-      - OLED shows REALTIME VALUES:
-          MOM, LY, MODE, STATE, PC, POT_8bit, CC11, CH
-      - OLED updates on events (mode switch, pot change, footswitch)
-        and also periodically (PRINT_EVERY_MS) but only if something changed.
+      FIX 2026-01:
+        - Freeze selection briefly after toggle to avoid jitter-jumps.
+        - OLED PC shows selected ON preset PC (pc_on), not last bypass PC.
     """
-    print("=== LIVE MODE: Preset Cycle + Pot(CC11) ===")
-    print("LAYER_SW: CLASSIC <-> CHORDS")
-    print("MOMENTARY: NEXT preset (BYPASS prev -> ON next)")
-    print("POT -> CC11: 0=toe up, 127=toe down")
+    print("=== LIVE MODE: Pot Select + Momentary Toggle + Bank Pins ===")
+    print("MODE PINS: GP10=CLASSIC, GP11=CHORDS (prio: CHORDS)")
+    print("POT: selects target preset")
+    print("MOMENTARY: toggles selected preset ON/OFF")
+    print("POT -> CC11 (optional) on current bank channel")
+    print(f"LONG-HOLD LAYER ({MENU_OPEN_HOLD_MS}ms): OPEN MENU")
     print("Ctrl+C to stop.\n")
 
     classic_active, classic_bypass = build_presets_classic()
@@ -1088,204 +756,223 @@ def live_monitor():
     fs_state = debounce_init(footsw)
     ly_state = debounce_init(layer_sw)
 
-    # ADC smoothing init
     raw8 = adc_to_8bit(pot.read_u16())
     filt8 = raw8
     last_pot_8_reported = filt8
 
-    # selection state per mode
-    idx = {"CLASSIC": 0, "CHORDS": 0}
-
-    # track whether a mode has already activated a preset
-    started = {"CLASSIC": False, "CHORDS": False}
-
-    # keep consistent state per mode (last sent PC + state text)
+    sel_idx = {"CLASSIC": 0, "CHORDS": 0}
+    effect_on = {"CLASSIC": False, "CHORDS": False}
     last_pc_sent = {"CLASSIC": 0, "CHORDS": 0}
     last_state_txt = {"CLASSIC": "OFF", "CHORDS": "OFF"}
 
-    def mode_from_layer(ly_on: bool) -> str:
-        return "CHORDS" if ly_on else "CLASSIC"
+    FREEZE_AFTER_TOGGLE_MS = 250
+    freeze_sel_until_ms = 0
 
-    # prime initial mode
-    debounce_update(layer_sw, ly_state, time.ticks_ms())
-    cur_mode = mode_from_layer(pressed_from_pullup(ly_state["stable"]))
+    def _read_layer_pressed():
+        return (layer_sw.value() == 0)
+
+    def _read_mom_pressed():
+        return (footsw.value() == 0)
+
+    def _read_pot_u16():
+        return pot.read_u16()
+
+    layer_hold_start = None
+    block_until_layer_release = False
+
+    def bank_from_pins() -> str:
+        if mode_chords_sw.value() == 0:
+            return "CHORDS"
+        if mode_classic_sw.value() == 0:
+            return "CLASSIC"
+        return "CLASSIC"
+
+    def bank_ctx(bank: str):
+        if bank == "CHORDS":
+            return chords_active, chords_bypass_lu, LIVE_CH_CHORDS
+        return classic_active, classic_bypass_lu, LIVE_CH_CLASSIC
+
+    def pot8_to_index(p8: int, n: int) -> int:
+        if n <= 1:
+            return 0
+
+        dz = POT_DEADZONE_8BIT
+        lo = dz
+        hi = 255 - dz
+
+        if p8 < lo:
+            p8 = lo
+        elif p8 > hi:
+            p8 = hi
+
+        span = hi - lo
+        if span <= 0:
+            return 0
+
+        scaled = p8 - lo
+        return (scaled * (n - 1) + (span // 2)) // span
 
     last_fs_pressed = False
-    last_mode = cur_mode
-
-    # init selected preset (OFF)
-    if cur_mode == "CLASSIC":
-        _init_name, init_pc = classic_active[idx["CLASSIC"]]
-    else:
-        _init_name, init_pc = chords_active[idx["CHORDS"]]
-
-    last_pc_sent[cur_mode] = init_pc
-    last_state_txt[cur_mode] = "OFF"
-
-    # OLED change-detection cache (avoid flicker)
+    last_bank = bank_from_pins()
     last_oled_tuple = None
+    last_print_ms = time.ticks_ms()
 
     # initial OLED
     if oled:
+        debounce_update(layer_sw, ly_state, time.ticks_ms())
         ly_on = pressed_from_pullup(ly_state["stable"])
-        fs_pressed = False
-        cc11_val = (last_pot_8_reported * 127 + 127) // 255
-        tup = (fs_pressed, ly_on, cur_mode, "OFF", init_pc, last_pot_8_reported, cc11_val, LIVE_CC11_CHANNEL + 1)
-        oled_show_realtime_status(fs_pressed, ly_on, cur_mode, "OFF", init_pc, last_pot_8_reported, cc11_val, LIVE_CC11_CHANNEL + 1)
-        last_oled_tuple = tup
 
-    last_print_ms = time.ticks_ms()
+        bank = last_bank
+        active_list, _bypass_lu, ch0 = bank_ctx(bank)
+
+        name, pc_on = active_list[sel_idx[bank]]
+        show_state = last_state_txt[bank]
+        show_pc = pc_on
+
+        tup = (False, ly_on, bank, show_state, show_pc, filt8, name, ch0 + 1)
+        oled_show_realtime_status(False, ly_on, bank, show_state, show_pc, filt8, name, ch0 + 1)
+        last_oled_tuple = tup
 
     while True:
         now = time.ticks_ms()
 
-        # debounce inputs
         debounce_update(footsw, fs_state, now)
         debounce_update(layer_sw, ly_state, now)
 
         fs_pressed = pressed_from_pullup(fs_state["stable"])
         ly_on = pressed_from_pullup(ly_state["stable"])
 
-        # mode switch handling
-        cur_mode = mode_from_layer(ly_on)
-        if cur_mode != last_mode:
-            last_mode = cur_mode
+        # MENU long-hold on LAYER
+        if UI_MENU_AVAILABLE and ui_menu and ui_menu.enabled():
+            if block_until_layer_release:
+                if not ly_on:
+                    block_until_layer_release = False
+                time.sleep_ms(POLL_MS)
+                continue
 
-            # choose current selection in that mode
-            if cur_mode == "CLASSIC":
-                _name, sel_pc = classic_active[idx["CLASSIC"]]
-            else:
-                _name, sel_pc = chords_active[idx["CHORDS"]]
+            if ly_on and layer_hold_start is None:
+                layer_hold_start = now
+            if not ly_on:
+                layer_hold_start = None
 
-            cc11_val = (last_pot_8_reported * 127 + 127) // 255
-            show_pc = last_pc_sent[cur_mode] if last_pc_sent[cur_mode] else sel_pc
-            show_state = last_state_txt[cur_mode]
+            if ly_on and layer_hold_start is not None:
+                if time.ticks_diff(now, layer_hold_start) >= MENU_OPEN_HOLD_MS:
+                    layer_hold_start = None
+                    try:
+                        if oled:
+                            oled_show_preset("MENU", "open...", 0, TEST_CHANNEL + 1, state="ON")
+                            time.sleep_ms(200)
+                    except:
+                        pass
 
-            if oled:
-                tup = (fs_pressed, ly_on, cur_mode, show_state, show_pc, last_pot_8_reported, cc11_val, LIVE_CC11_CHANNEL + 1)
-                if tup != last_oled_tuple:
-                    oled_show_realtime_status(fs_pressed, ly_on, cur_mode, show_state, show_pc, last_pot_8_reported, cc11_val, LIVE_CC11_CHANNEL + 1)
-                    last_oled_tuple = tup
+                    ui_menu.open_blocking(_read_layer_pressed, _read_mom_pressed, _read_pot_u16, poll_ms=15)
 
-            print(f"[MODE] switched to {cur_mode}")
+                    fs_state = debounce_init(footsw)
+                    ly_state = debounce_init(layer_sw)
+                    last_fs_pressed = False
+                    block_until_layer_release = True
+                    last_oled_tuple = None
+                    continue
 
-        # pot smoothing + CC11
+        bank = bank_from_pins()
+        active_list, bypass_lu, ch0 = bank_ctx(bank)
+
+        if bank != last_bank:
+            last_bank = bank
+            last_oled_tuple = None
+            print(f"[BANK] switched to {bank} (CH={ch0+1})")
+
         raw8 = adc_to_8bit(pot.read_u16())
         filt8 = filt8 + (POT_SMOOTH_ALPHA_NUM * (raw8 - filt8)) // POT_SMOOTH_ALPHA_DEN
 
         pot_changed = abs(filt8 - last_pot_8_reported) >= POT_PRINT_THRESHOLD_8BIT
         if pot_changed:
             last_pot_8_reported = filt8
-
-            cc11_val = (last_pot_8_reported * 127 + 127) // 255
+            cc11_val = (filt8 * 127 + 127) // 255
             if LIVE_SEND_CC11 and MIDI_ENABLED and midi is not None:
-                midi_cc(11, cc11_val, LIVE_CC11_CHANNEL)
+                midi_cc(11, cc11_val, ch0)
 
-            # determine what should be shown
-            if cur_mode == "CLASSIC":
-                _name, sel_pc = classic_active[idx["CLASSIC"]]
-            else:
-                _name, sel_pc = chords_active[idx["CHORDS"]]
+        # selection update if not frozen
+        if time.ticks_diff(now, freeze_sel_until_ms) >= 0:
+            new_idx = pot8_to_index(filt8, len(active_list))
+            if new_idx != sel_idx[bank]:
+                sel_idx[bank] = new_idx
+                name, pc_on = active_list[sel_idx[bank]]
 
-            show_pc = last_pc_sent[cur_mode] if last_pc_sent[cur_mode] else sel_pc
-            show_state = last_state_txt[cur_mode]
+                if effect_on[bank]:
+                    midi_pc(pc_on, ch0)
+                    last_pc_sent[bank] = pc_on
+                    last_state_txt[bank] = "ON"
+                    print(f"[LIVE] {bank} SELECT -> ON  PC {pc_on:02d} ({name})")
 
-            if oled:
-                tup = (fs_pressed, ly_on, cur_mode, show_state, show_pc, last_pot_8_reported, cc11_val, LIVE_CC11_CHANNEL + 1)
-                if tup != last_oled_tuple:
-                    oled_show_realtime_status(fs_pressed, ly_on, cur_mode, show_state, show_pc, last_pot_8_reported, cc11_val, LIVE_CC11_CHANNEL + 1)
-                    last_oled_tuple = tup
+                last_oled_tuple = None
 
-        # footswitch rising edge -> NEXT PRESET (bypass prev, enable next)
+        # toggle on rising edge
         if fs_pressed and not last_fs_pressed:
-            if cur_mode == "CLASSIC":
-                active_list = classic_active
-                bypass_lu = classic_bypass_lu
-                mkey = "CLASSIC"
-            else:
-                active_list = chords_active
-                bypass_lu = chords_bypass_lu
-                mkey = "CHORDS"
+            freeze_sel_until_ms = time.ticks_add(now, FREEZE_AFTER_TOGGLE_MS)
 
-            # 1) if already started in this mode -> bypass previous preset first, then advance
-            if started[mkey]:
-                prev_name, _prev_pc_on = active_list[idx[mkey]]
-                prev_pc_off = bypass_lu.get(prev_name, None)
-                if prev_pc_off is not None:
-                    midi_pc(prev_pc_off, LIVE_CC11_CHANNEL)
-                    time.sleep_ms(120)   # 80–200ms testen
-                    last_pc_sent[mkey] = prev_pc_off
-                    last_state_txt[mkey] = "BYPASS"
+            idx = sel_idx[bank]
+            name, pc_on = active_list[idx]
+            pc_off = bypass_lu.get(name, None)
+
+            if not effect_on[bank]:
+                midi_pc(pc_on, ch0)
+                effect_on[bank] = True
+                last_pc_sent[bank] = pc_on
+                last_state_txt[bank] = "ON"
+                print(f"[LIVE] {bank} ON  -> PC {pc_on:02d} ({name})")
+            else:
+                if pc_off is not None:
+                    midi_pc(pc_off, ch0)
+                    effect_on[bank] = False
+                    last_pc_sent[bank] = pc_off
+                    last_state_txt[bank] = "BYPASS"
+                    print(f"[LIVE] {bank} OFF -> PC {pc_off:02d} ({name})")
                 else:
-                    print(f"[LIVE] BYPASS missing for: {prev_name}")
-
-                idx[mkey] = (idx[mkey] + 1) % len(active_list)
-            else:
-                # First press: do NOT advance -> activate preset 0
-                started[mkey] = True
-
-            # 2) enable current preset
-            _name, pc_on = active_list[idx[mkey]]
-            midi_pc(pc_on, LIVE_CC11_CHANNEL)
-            last_pc_sent[mkey] = pc_on
-            last_state_txt[mkey] = "ON"
-
-            cc11_val = (last_pot_8_reported * 127 + 127) // 255
-            if oled:
-                tup = (fs_pressed, ly_on, cur_mode, "ON", pc_on, last_pot_8_reported, cc11_val, LIVE_CC11_CHANNEL + 1)
-                if tup != last_oled_tuple:
-                    oled_show_realtime_status(fs_pressed, ly_on, cur_mode, "ON", pc_on, last_pot_8_reported, cc11_val, LIVE_CC11_CHANNEL + 1)
-                    last_oled_tuple = tup
-
-            print(f"[LIVE] {cur_mode} NEXT -> ON  PC {pc_on:02d}")
+                    effect_on[bank] = False
+                    last_state_txt[bank] = "OFF"
+                    print(f"[LIVE] {bank} OFF requested but BYPASS missing for: {name}")
 
         last_fs_pressed = fs_pressed
 
-        # periodic console status (OLED only if changed)
+        # OLED update (show preset name!)
+        name, pc_on = active_list[sel_idx[bank]]
+        show_pc = pc_on
+        show_state = last_state_txt[bank]
+
+        if oled:
+            tup = (fs_pressed, ly_on, bank, show_state, show_pc, filt8, name, ch0 + 1)
+            if tup != last_oled_tuple:
+                oled_show_realtime_status(fs_pressed, ly_on, bank, show_state, show_pc, filt8, name, ch0 + 1)
+                last_oled_tuple = tup
+
         if time.ticks_diff(now, last_print_ms) >= PRINT_EVERY_MS:
-            cc11_val = (last_pot_8_reported * 127 + 127) // 255
-
-            if cur_mode == "CLASSIC":
-                _name, sel_pc = classic_active[idx["CLASSIC"]]
-            else:
-                _name, sel_pc = chords_active[idx["CHORDS"]]
-
-            show_pc = last_pc_sent[cur_mode] if last_pc_sent[cur_mode] else sel_pc
-            show_state = last_state_txt[cur_mode]
-
+            cc11_val = (filt8 * 127 + 127) // 255
             print(
                 f"MOMENTARY={fs_pressed} | "
                 f"LAYER_SW={ly_on} | "
-                f"MODE={cur_mode:<7} | "
+                f"BANK={bank:<7} | "
                 f"STATE={show_state:<6} | "
-                f"PC={show_pc:02d} | "
-                f"POT_8bit={last_pot_8_reported:3d} | "
+                f"PC_SEL={pc_on:02d} | "
+                f"PC_SENT={last_pc_sent[bank]:02d} | "
+                f"SEL={sel_idx[bank]:02d} | "
+                f"POT_8bit={filt8:3d} | "
                 f"CC11={cc11_val:3d} | "
-                f"CH={LIVE_CC11_CHANNEL+1:02d}"
+                f"CH={ch0+1:02d}"
             )
-
-            if oled:
-                tup = (fs_pressed, ly_on, cur_mode, show_state, show_pc, last_pot_8_reported, cc11_val, LIVE_CC11_CHANNEL + 1)
-                if tup != last_oled_tuple:
-                    oled_show_realtime_status(fs_pressed, ly_on, cur_mode, show_state, show_pc, last_pot_8_reported, cc11_val, LIVE_CC11_CHANNEL + 1)
-                    last_oled_tuple = tup
-
             last_print_ms = now
 
         time.sleep_ms(POLL_MS)
 
 # -----------------------------
-# MAIN (MIDI ALWAYS FIRST; TESTS FAIL-SAFE)
+# MAIN
 # -----------------------------
 try:
     print_pin_assignments()
-
-    # Make MIDI "alive" immediately, regardless of OLED/SD/BT status.
     midi_heartbeat()
 
-    # OLED test (fail-safe)
     try:
-        run_with_timeout(oled_test_screen, 5000, "OLED test")
+        run_with_timeout(oled_test_screen, 6000, "OLED test")
     except Exception as e:
         print("[WARN] OLED test skipped:", e)
 
@@ -1303,6 +990,24 @@ try:
         except:
             pass
 
+    # Menu init remains, but WITHOUT BT/SD hooks
+    if UI_MENU_AVAILABLE and ui_menu and oled and DISPLAY_UI_AVAILABLE and display_ui:
+        try:
+            ui_menu.init(
+                oled=oled,
+                oled_w=OLED_W,
+                oled_h=OLED_H,
+                display_ui_module=display_ui,
+                print_hw_report=print_hw_report,
+                oled_hw_report_brief=oled_hw_report_brief,
+                run_all_tests=run_all_tests,
+                run_with_timeout=run_with_timeout,
+                oled_clear=oled_clear,
+                test_channel=TEST_CHANNEL,
+            )
+        except Exception as e:
+            print("[UI_MENU] init failed:", e)
+
     run_all_tests(TEST_CHANNEL)
     live_monitor()
 
@@ -1310,4 +1015,3 @@ except KeyboardInterrupt:
     if oled:
         oled_show_preset("Stopped", "by user", 0, TEST_CHANNEL + 1, state="ON")
     print("\nStopped by user (Ctrl+C).")
-
