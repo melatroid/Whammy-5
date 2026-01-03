@@ -1,4 +1,4 @@
-# Melatroid - Whammy 5 MIDI TEST SUITE - 1.04
+# Melatroid - Whammy 5 MIDI TEST SUITE - 1.05
 #
 # COPY ALL PY FILES TO RP2040!!!
 #
@@ -963,4 +963,5 @@ except KeyboardInterrupt:
     if oled:
         oled_show_preset("Stopped", "by user", 0, TEST_CHANNEL + 1, state="ON")
     print("\nStopped by user (Ctrl+C).")
+
 
