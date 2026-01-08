@@ -6,11 +6,10 @@ You need all modifications to use the featueres. Good Luck <br>
 
 First working Version https://youtube.com/shorts/IK64kfcIJxg?si=UPolimbWAzZB3oC1
 
-
 # Basic Version for Free
-# Pro Version
+# Pro & Flashing Tool for 2040 Zero here...
 <div align="left">
-  <a href="https://www.nexosoft-engineering.de/neo/index.html">For Pro Version click here...</a>
+  <a href="https://www.nexosoft-engineering.de/neo/index.html">Pro Version & Flashing</a>
 </div>
 
 <h1>
