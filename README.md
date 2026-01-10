@@ -6,6 +6,7 @@ You need all modifications to use the featueres. Good Luck <br>
 
 First working Version https://youtube.com/shorts/IK64kfcIJxg?si=UPolimbWAzZB3oC1
 
+
 # Basic Version for Free
 # Pro & Flashing Tool for 2040 Zero here...
 <div align="left">
@@ -17,6 +18,3 @@ First working Version https://youtube.com/shorts/IK64kfcIJxg?si=UPolimbWAzZB3oC1
 This Modification could brick your Device!
 You lose your manufacturer's warranty.
 <h1>
-
-# Momantary       - In process
-# Holding (time)  - In process
