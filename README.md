@@ -6,8 +6,9 @@ You need all modifications to use the featueres. Good Luck <br>
 
 First working Version https://youtube.com/shorts/IK64kfcIJxg?si=UPolimbWAzZB3oC1
 
-
 # Basic Version for Free
+Software is for Free, to use all Features buy Pro Version
+
 # Pro & Flashing Tool for 2040 Zero here...
 <div align="left">
   <a href="https://www.nexosoft-engineering.de/neo/index.html">Pro Version & Flashing</a>
